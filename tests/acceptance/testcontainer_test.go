@@ -124,7 +124,7 @@ func createNewContainer(t *testing.T) *SSHTestContainer {
 	}
 
 	req := testcontainers.ContainerRequest{
-		Image:        "lscr.io/linuxserver/openssh-server:latest",
+		Image:        "linuxserver/openssh-server:latest",
 		ExposedPorts: []string{"2222/tcp"},
 		Env: map[string]string{
 			"PUID":            "1000",
