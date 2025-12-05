@@ -6,7 +6,7 @@ A native Terraform/OpenTofu provider for declarative file synchronization to rem
 [![Lint](https://github.com/darshan-rambhia/terraform-provider-filesync/actions/workflows/lint.yml/badge.svg)](https://github.com/darshan-rambhia/terraform-provider-filesync/actions/workflows/lint.yml)
 [![codecov](https://codecov.io/gh/darshan-rambhia/terraform-provider-filesync/graph/badge.svg)](https://codecov.io/gh/darshan-rambhia/terraform-provider-filesync)
 [![Terraform Registry Version](https://img.shields.io/badge/registry-v0.1.0-blue?logo=terraform)](https://registry.terraform.io/providers/darshan-rambhia/filesync/latest)
-[![Go Version](https://img.shields.io/badge/go-1.21-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/go-1.24-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Overview

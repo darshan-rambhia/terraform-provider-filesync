@@ -27,17 +27,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
       - run: go mod download
       - run: go build -v .
       - name: Run linters
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9.2.0
         with:
-          version: latest
+          version: v2.7.1
 
   # Unit tests - fast, no Docker required, runs in parallel with build
   unit-test:
@@ -45,17 +45,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
       - run: go mod download
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
       - name: Run unit tests with coverage
-        run: go test -v -short -race -coverprofile=coverage.out -covermode=atomic -json ./... > test-results.json
+        run: gotestsum --junitfile test-results.xml -- -short -race -coverprofile=coverage.out -covermode=atomic ./...
         timeout-minutes: 5
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: ./coverage.out
           flags: unittests
@@ -65,7 +67,7 @@ jobs:
         uses: test-summary/action@v2
         if: always()
         with:
-          paths: test-results.json
+          paths: test-results.xml
 
   # Acceptance tests - requires Docker for testcontainers
   acceptance-test:
@@ -94,8 +96,8 @@ jobs:
           - tool: opentofu
             version: '1.8.*'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true

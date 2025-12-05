@@ -49,7 +49,7 @@ tasks:
     vars:
       PARALLEL: '{{.PARALLEL | default "5"}}'
     cmds:
-      - go test -v ./tests/acceptance -timeout 30m -parallel-containers={{.PARALLEL}}
+      - go test --race -v ./tests/acceptance -timeout 30m -parallel-containers={{.PARALLEL}}
 
   coverage:
     desc: Run tests with coverage and generate HTML report
