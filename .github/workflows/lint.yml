@@ -1,0 +1,41 @@
+# Lint workflow for dedicated badge
+name: Lint
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'CLAUDE.md'
+      - '.github/copilot-instructions.md'
+      - 'docs/**'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'CLAUDE.md'
+      - '.github/copilot-instructions.md'
+      - 'docs/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
