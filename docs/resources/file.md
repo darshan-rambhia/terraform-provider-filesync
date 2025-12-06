@@ -108,6 +108,7 @@ resource "filesync_file" "nginx_config" {
 - `bastion_private_key` (String, Sensitive) SSH private key content for bastion host (sensitive). Falls back to ssh_private_key if not set.
 - `bastion_user` (String) SSH user for bastion host. Falls back to ssh_user if not set.
 - `group` (String) File group on remote. Defaults to the SSH user's primary group.
+- `insecure_ignore_host_key` (Boolean) Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.
 - `mode` (String) File permissions in octal notation (e.g., '0644' for rw-r--r--). Must be 4 digits. Defaults to '0644'.
 - `owner` (String) File owner on remote. Defaults to the SSH user.
 - `ssh_certificate` (String, Sensitive) SSH certificate content for certificate authentication. Used with ssh_private_key or ssh_key_path. Overrides provider default.

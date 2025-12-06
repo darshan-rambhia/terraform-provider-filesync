@@ -824,17 +824,19 @@ func computeCombinedHash(files []FileInfo) string {
 
 // scanDirectoryForPlan scans a directory and returns file info and computed values.
 // This is used by plan modifiers to compute the expected state during planning.
-func scanDirectoryForPlan(ctx context.Context, req interface{ GetAttribute(context.Context, path.Path, interface{}) diag.Diagnostics }) ([]FileInfo, string, int64, int64, map[string]string, error) {
+func scanDirectoryForPlan(ctx context.Context, req interface {
+	GetAttribute(context.Context, path.Path, any) diag.Diagnostics
+}) (string, int64, int64, map[string]string, error) {
 	// Get source path from plan.
 	var sourcePath types.String
 	if diags := req.GetAttribute(ctx, path.Root("source"), &sourcePath); diags.HasError() || sourcePath.IsUnknown() || sourcePath.IsNull() {
-		return nil, "", 0, 0, nil, fmt.Errorf("source path not available")
+		return "", 0, 0, nil, fmt.Errorf("source path not available")
 	}
 
 	// Get exclude patterns from plan.
 	var excludeList types.List
 	if diags := req.GetAttribute(ctx, path.Root("exclude"), &excludeList); diags.HasError() {
-		return nil, "", 0, 0, nil, fmt.Errorf("exclude patterns not available")
+		return "", 0, 0, nil, fmt.Errorf("exclude patterns not available")
 	}
 
 	var excludePatterns []string
@@ -849,7 +851,7 @@ func scanDirectoryForPlan(ctx context.Context, req interface{ GetAttribute(conte
 	// Scan the directory.
 	files, err := scanDirectory(sourcePath.ValueString(), excludePatterns)
 	if err != nil {
-		return nil, "", 0, 0, nil, err
+		return "", 0, 0, nil, err
 	}
 
 	// Compute values.
@@ -863,7 +865,7 @@ func scanDirectoryForPlan(ctx context.Context, req interface{ GetAttribute(conte
 	combinedHash := computeCombinedHash(files)
 	fileCount := int64(len(files))
 
-	return files, combinedHash, fileCount, totalSize, fileHashes, nil
+	return combinedHash, fileCount, totalSize, fileHashes, nil
 }
 
 // directorySourceHashPlanModifier computes the combined hash during planning.
@@ -883,7 +885,7 @@ func (m directorySourceHashPlanModifier) PlanModifyString(ctx context.Context, r
 		return
 	}
 
-	_, combinedHash, _, _, _, err := scanDirectoryForPlan(ctx, req.Plan)
+	combinedHash, _, _, _, err := scanDirectoryForPlan(ctx, req.Plan)
 	if err != nil {
 		// Directory doesn't exist or can't be read - let Create/Update handle the error.
 		resp.PlanValue = types.StringUnknown()
@@ -910,7 +912,7 @@ func (m directoryFileCountPlanModifier) PlanModifyInt64(ctx context.Context, req
 		return
 	}
 
-	_, _, fileCount, _, _, err := scanDirectoryForPlan(ctx, req.Plan)
+	_, fileCount, _, _, err := scanDirectoryForPlan(ctx, req.Plan)
 	if err != nil {
 		resp.PlanValue = types.Int64Unknown()
 		return
@@ -936,7 +938,7 @@ func (m directoryTotalSizePlanModifier) PlanModifyInt64(ctx context.Context, req
 		return
 	}
 
-	_, _, _, totalSize, _, err := scanDirectoryForPlan(ctx, req.Plan)
+	_, _, totalSize, _, err := scanDirectoryForPlan(ctx, req.Plan)
 	if err != nil {
 		resp.PlanValue = types.Int64Unknown()
 		return
@@ -962,7 +964,7 @@ func (m directoryFileHashesPlanModifier) PlanModifyMap(ctx context.Context, req 
 		return
 	}
 
-	_, _, _, _, fileHashes, err := scanDirectoryForPlan(ctx, req.Plan)
+	_, _, _, fileHashes, err := scanDirectoryForPlan(ctx, req.Plan)
 	if err != nil {
 		resp.PlanValue = types.MapUnknown(types.StringType)
 		return
