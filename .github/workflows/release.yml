@@ -52,6 +52,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Validate manual tag format if provided
+      - name: Validate tag format
+        if: inputs.tag != ''
+        run: |
+          if ! echo "${{ inputs.tag }}" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Invalid tag format: '${{ inputs.tag }}'"
+            echo "Tag must follow semver format: vX.Y.Z (e.g., v0.1.0, v1.2.3-beta.1)"
+            exit 1
+          fi
+          echo "✓ Tag format valid: ${{ inputs.tag }}"
+
       # Use manual tag if provided
       - name: Create manual tag
         id: manual
