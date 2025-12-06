@@ -11,6 +11,7 @@
 # - Use #minor in last commit for minor bump (v0.1.0 -> v0.2.0)
 # - Use #major in last commit for major bump (v0.1.0 -> v1.0.0)
 name: Release
+run-name: Release ${{ inputs.tag || 'auto-increment' }} from ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -103,7 +104,7 @@ jobs:
           cache: true
 
       - name: Import GPG key
-        uses: crazy-max/ghaction-import-gpg@v63.0
+        uses: crazy-max/ghaction-import-gpg@v6.3.0
         id: import_gpg
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
