@@ -20,6 +20,16 @@ Traditional Terraform provisioners have a fundamental "state problem":
 
 This provider solves these issues by treating each file as a first-class Terraform resource with explicit state tracking.
 
+## Why I Built This
+
+I needed to manage configuration files across my homelab servers. The typical approach—using `null_resource` with `file` or `remote-exec` provisioners—felt fragile:
+
+- Every config change meant manually updating a trigger hash—easy to forget.
+- If I tweaked something directly on a server while debugging and forgot to copy it back to git, the next apply would silently overwrite my changes.
+- When a provisioner failed halfway through, I had to spend time figuring out which files actually made it to the server—especially painful when a VM runs multiple services.
+
+I wanted config files to be **real Terraform resources**: tracked in state, visible in plans, with proper drift detection. Now when I update `prometheus.yml` locally, `terraform plan` shows exactly what will change—no surprises.
+
 ## Features
 
 - **One resource per file** - Explicit state tracking (~300 bytes per file)
