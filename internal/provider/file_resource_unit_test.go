@@ -1147,29 +1147,38 @@ func buildTerraformValue(t *testing.T, s schema.Schema, data FileResourceModel) 
 		return i.ValueInt64Pointer()
 	}
 
+	// Helper to convert bool to value or nil.
+	boolVal := func(b types.Bool) interface{} {
+		if b.IsNull() || b.IsUnknown() {
+			return nil
+		}
+		return b.ValueBool()
+	}
+
 	vals := map[string]tftypes.Value{
-		"id":                   tftypes.NewValue(tftypes.String, strVal(data.ID)),
-		"source":               tftypes.NewValue(tftypes.String, strVal(data.Source)),
-		"destination":          tftypes.NewValue(tftypes.String, strVal(data.Destination)),
-		"host":                 tftypes.NewValue(tftypes.String, strVal(data.Host)),
-		"ssh_port":             tftypes.NewValue(tftypes.Number, intVal(data.SSHPort)),
-		"ssh_user":             tftypes.NewValue(tftypes.String, strVal(data.SSHUser)),
-		"ssh_key_path":         tftypes.NewValue(tftypes.String, strVal(data.SSHKeyPath)),
-		"ssh_private_key":      tftypes.NewValue(tftypes.String, strVal(data.SSHPrivateKey)),
-		"ssh_password":         tftypes.NewValue(tftypes.String, strVal(data.SSHPassword)),
-		"ssh_certificate":      tftypes.NewValue(tftypes.String, strVal(data.SSHCertificate)),
-		"ssh_certificate_path": tftypes.NewValue(tftypes.String, strVal(data.SSHCertificatePath)),
-		"mode":                 tftypes.NewValue(tftypes.String, strVal(data.Mode)),
-		"owner":                tftypes.NewValue(tftypes.String, strVal(data.Owner)),
-		"group":                tftypes.NewValue(tftypes.String, strVal(data.Group)),
-		"bastion_host":         tftypes.NewValue(tftypes.String, strVal(data.BastionHost)),
-		"bastion_port":         tftypes.NewValue(tftypes.Number, intVal(data.BastionPort)),
-		"bastion_user":         tftypes.NewValue(tftypes.String, strVal(data.BastionUser)),
-		"bastion_private_key":  tftypes.NewValue(tftypes.String, strVal(data.BastionKey)),
-		"bastion_key_path":     tftypes.NewValue(tftypes.String, strVal(data.BastionKeyPath)),
-		"bastion_password":     tftypes.NewValue(tftypes.String, strVal(data.BastionPassword)),
-		"source_hash":          tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
-		"size":                 tftypes.NewValue(tftypes.Number, intVal(data.Size)),
+		"id":                       tftypes.NewValue(tftypes.String, strVal(data.ID)),
+		"source":                   tftypes.NewValue(tftypes.String, strVal(data.Source)),
+		"destination":              tftypes.NewValue(tftypes.String, strVal(data.Destination)),
+		"host":                     tftypes.NewValue(tftypes.String, strVal(data.Host)),
+		"ssh_port":                 tftypes.NewValue(tftypes.Number, intVal(data.SSHPort)),
+		"ssh_user":                 tftypes.NewValue(tftypes.String, strVal(data.SSHUser)),
+		"ssh_key_path":             tftypes.NewValue(tftypes.String, strVal(data.SSHKeyPath)),
+		"ssh_private_key":          tftypes.NewValue(tftypes.String, strVal(data.SSHPrivateKey)),
+		"ssh_password":             tftypes.NewValue(tftypes.String, strVal(data.SSHPassword)),
+		"ssh_certificate":          tftypes.NewValue(tftypes.String, strVal(data.SSHCertificate)),
+		"ssh_certificate_path":     tftypes.NewValue(tftypes.String, strVal(data.SSHCertificatePath)),
+		"mode":                     tftypes.NewValue(tftypes.String, strVal(data.Mode)),
+		"owner":                    tftypes.NewValue(tftypes.String, strVal(data.Owner)),
+		"group":                    tftypes.NewValue(tftypes.String, strVal(data.Group)),
+		"bastion_host":             tftypes.NewValue(tftypes.String, strVal(data.BastionHost)),
+		"bastion_port":             tftypes.NewValue(tftypes.Number, intVal(data.BastionPort)),
+		"bastion_user":             tftypes.NewValue(tftypes.String, strVal(data.BastionUser)),
+		"bastion_private_key":      tftypes.NewValue(tftypes.String, strVal(data.BastionKey)),
+		"bastion_key_path":         tftypes.NewValue(tftypes.String, strVal(data.BastionKeyPath)),
+		"bastion_password":         tftypes.NewValue(tftypes.String, strVal(data.BastionPassword)),
+		"insecure_ignore_host_key": tftypes.NewValue(tftypes.Bool, boolVal(data.InsecureIgnoreHostKey)),
+		"source_hash":              tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
+		"size":                     tftypes.NewValue(tftypes.Number, intVal(data.Size)),
 	}
 
 	return tftypes.NewValue(attrTypes, vals)

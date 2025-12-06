@@ -235,6 +235,8 @@ func TestAccFileResource_InvalidImportID(t *testing.T) {
 }
 
 // TestAccFileResource_DriftDetection tests that external changes to remote files are detected.
+// Note: Drift detection only occurs during Update. Since we keep Read/Plan local-only (no remote
+// connection), drift is only detected when the local file also changes, triggering an Update.
 func TestAccFileResource_DriftDetection(t *testing.T) {
 	t.Parallel()
 
@@ -255,13 +257,18 @@ func TestAccFileResource_DriftDetection(t *testing.T) {
 					CheckRemoteFileContent(container, remotePath, "original content from terraform\n"),
 				),
 			},
-			// Step 2: Externally modify the file and verify drift detection fails.
+			// Step 2: Externally modify the remote file AND change the local file.
+			// The local change triggers Update, which then detects the remote drift.
 			{
 				PreConfig: func() {
 					// Simulate external modification (someone edited the file on the server).
 					_, err := container.runCommand(fmt.Sprintf("echo 'modified externally' > %s", remotePath))
 					if err != nil {
 						t.Fatalf("failed to externally modify file: %v", err)
+					}
+					// Also modify local file to trigger Update where drift is detected.
+					if err := os.WriteFile(sourceFile, []byte("new local content\n"), 0644); err != nil {
+						t.Fatalf("failed to modify local file: %v", err)
 					}
 				},
 				Config:      cfg.FileResourceConfig("test", sourceFile, remotePath, "0644"),

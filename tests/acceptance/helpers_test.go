@@ -49,20 +49,23 @@ func NewTestSSHConfig(c *SSHTestContainer) *TestSSHConfig {
 // ProviderBlock returns the provider configuration block.
 func (c *TestSSHConfig) ProviderBlock() string {
 	if c.PrivateKey != "" {
-		escapedKey := strings.ReplaceAll(c.PrivateKey, "\n", "\\n")
+		// Use %q directly - it properly escapes newlines as \n for HCL.
+		// Do NOT pre-escape with strings.ReplaceAll, as that causes double-escaping.
 		return fmt.Sprintf(`
 provider "filesync" {
-  ssh_user        = %q
-  ssh_private_key = %q
-  ssh_port        = %d
+  ssh_user                 = %q
+  ssh_private_key          = %q
+  ssh_port                 = %d
+  insecure_ignore_host_key = true
 }
-`, c.User, escapedKey, c.Port)
+`, c.User, c.PrivateKey, c.Port)
 	}
 	return fmt.Sprintf(`
 provider "filesync" {
-  ssh_user     = %q
-  ssh_key_path = %q
-  ssh_port     = %d
+  ssh_user                 = %q
+  ssh_key_path             = %q
+  ssh_port                 = %d
+  insecure_ignore_host_key = true
 }
 `, c.User, c.PrivateKeyPath, c.Port)
 }
@@ -70,35 +73,37 @@ provider "filesync" {
 // ProviderBlockWithPooling returns the provider configuration with connection pooling enabled.
 func (c *TestSSHConfig) ProviderBlockWithPooling() string {
 	if c.PrivateKey != "" {
-		escapedKey := strings.ReplaceAll(c.PrivateKey, "\n", "\\n")
 		return fmt.Sprintf(`
 provider "filesync" {
-  ssh_user                = %q
-  ssh_private_key         = %q
-  ssh_port                = %d
-  connection_pool_enabled = true
+  ssh_user                 = %q
+  ssh_private_key          = %q
+  ssh_port                 = %d
+  connection_pool_enabled  = true
+  insecure_ignore_host_key = true
 }
-`, c.User, escapedKey, c.Port)
+`, c.User, c.PrivateKey, c.Port)
 	}
 	return fmt.Sprintf(`
 provider "filesync" {
-  ssh_user                = %q
-  ssh_key_path            = %q
-  ssh_port                = %d
-  connection_pool_enabled = true
+  ssh_user                 = %q
+  ssh_key_path             = %q
+  ssh_port                 = %d
+  connection_pool_enabled  = true
+  insecure_ignore_host_key = true
 }
 `, c.User, c.PrivateKeyPath, c.Port)
 }
 
 // SSHAttributes returns common SSH attributes for resources/datasources.
+// Note: insecure_ignore_host_key is set at provider level, not here,
+// because the filesync_host data source doesn't support it.
 func (c *TestSSHConfig) SSHAttributes() string {
 	if c.PrivateKey != "" {
-		escapedKey := strings.ReplaceAll(c.PrivateKey, "\n", "\\n")
 		return fmt.Sprintf(`
   ssh_port        = %d
   ssh_private_key = %q
   ssh_user        = %q
-`, c.Port, escapedKey, c.User)
+`, c.Port, c.PrivateKey, c.User)
 	}
 	return fmt.Sprintf(`
   ssh_port     = %d
@@ -192,12 +197,12 @@ func (c *TestSSHConfig) ProviderOnlyConfig() string {
 
 // FileResourceConfigWithInlineKey generates a filesync_file resource config using inline SSH key.
 func (c *TestSSHConfig) FileResourceConfigWithInlineKey(name, source, destination, mode string) string {
-	escapedKey := strings.ReplaceAll(c.PrivateKey, "\n", "\\n")
 	return fmt.Sprintf(`
 provider "filesync" {
-  ssh_user        = %q
-  ssh_private_key = %q
-  ssh_port        = %d
+  ssh_user                 = %q
+  ssh_private_key          = %q
+  ssh_port                 = %d
+  insecure_ignore_host_key = true
 }
 
 resource "filesync_file" %q {
@@ -211,19 +216,21 @@ resource "filesync_file" %q {
   owner           = %q
   group           = %q
 }
-`, c.User, escapedKey, c.Port, name, source, destination, c.Host, mode, c.Port, escapedKey, c.User, c.Owner, c.Group)
+`, c.User, c.PrivateKey, c.Port, name, source, destination, c.Host, mode, c.Port, c.PrivateKey, c.User, c.Owner, c.Group)
 }
 
 // HostDataSourceWithFileConfig generates a config that tests datasource with file resource using it.
 func (c *TestSSHConfig) HostDataSourceWithFileConfig(sourceFile, remotePath string) string {
 	return fmt.Sprintf(`
-provider "filesync" {}
+provider "filesync" {
+  insecure_ignore_host_key = true
+}
 
 data "filesync_host" "test" {
-  address      = %q
-  ssh_user     = %q
-  ssh_key_path = %q
-  ssh_port     = %d
+  address         = %q
+  ssh_user        = %q
+  ssh_private_key = %q
+  ssh_port        = %d
 }
 
 resource "filesync_file" "test" {
@@ -231,18 +238,22 @@ resource "filesync_file" "test" {
   destination = %q
   host        = data.filesync_host.test.address
 
-  ssh_user     = data.filesync_host.test.ssh_user
-  ssh_key_path = data.filesync_host.test.ssh_key_path
-  ssh_port     = data.filesync_host.test.ssh_port
-  mode         = "0644"
+  ssh_user        = data.filesync_host.test.ssh_user
+  ssh_private_key = data.filesync_host.test.ssh_private_key
+  ssh_port        = data.filesync_host.test.ssh_port
+  mode            = "0644"
+  owner           = %q
+  group           = %q
 }
-`, c.Host, c.User, c.PrivateKeyPath, c.Port, sourceFile, remotePath)
+`, c.Host, c.User, c.PrivateKey, c.Port, sourceFile, remotePath, c.Owner, c.Group)
 }
 
 // HostDataSourceForEachConfig generates a config that tests datasource with for_each.
 func (c *TestSSHConfig) HostDataSourceForEachConfig(sourceFile string) string {
 	return fmt.Sprintf(`
-provider "filesync" {}
+provider "filesync" {
+  insecure_ignore_host_key = true
+}
 
 locals {
   servers = {
@@ -254,10 +265,10 @@ locals {
 data "filesync_host" "servers" {
   for_each = local.servers
 
-  address      = %q
-  ssh_user     = %q
-  ssh_key_path = %q
-  ssh_port     = %d
+  address         = %q
+  ssh_user        = %q
+  ssh_private_key = %q
+  ssh_port        = %d
 }
 
 resource "filesync_file" "test" {
@@ -267,12 +278,14 @@ resource "filesync_file" "test" {
   destination = local.servers[each.key]
   host        = each.value.address
 
-  ssh_user     = each.value.ssh_user
-  ssh_key_path = each.value.ssh_key_path
-  ssh_port     = each.value.ssh_port
-  mode         = "0644"
+  ssh_user        = each.value.ssh_user
+  ssh_private_key = each.value.ssh_private_key
+  ssh_port        = each.value.ssh_port
+  mode            = "0644"
+  owner           = %q
+  group           = %q
 }
-`, c.Host, c.User, c.PrivateKeyPath, c.Port, sourceFile)
+`, c.Host, c.User, c.PrivateKey, c.Port, sourceFile, c.Owner, c.Group)
 }
 
 // Test file creation helpers.

@@ -71,6 +71,9 @@ type FileResourceModel struct {
 	BastionKeyPath  types.String `tfsdk:"bastion_key_path"`
 	BastionPassword types.String `tfsdk:"bastion_password"`
 
+	// Optional - security settings.
+	InsecureIgnoreHostKey types.Bool `tfsdk:"insecure_ignore_host_key"`
+
 	// Optional - file attributes.
 	Owner types.String `tfsdk:"owner"`
 	Group types.String `tfsdk:"group"`
@@ -217,6 +220,12 @@ resource "filesync_file" "nginx_config" {
 				Sensitive:           true,
 			},
 
+			// Optional - security settings.
+			"insecure_ignore_host_key": schema.BoolAttribute{
+				MarkdownDescription: "Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.",
+				Optional:            true,
+			},
+
 			// Optional - file attributes.
 			"owner": schema.StringAttribute{
 				MarkdownDescription: "File owner on remote. Defaults to the SSH user.",
@@ -345,6 +354,15 @@ func (r *FileResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	// and triggers an update when it differs from the stored state hash.
 
 	sourcePath := data.Source.ValueString()
+
+	// If source is not set (e.g., after import), don't remove from state.
+	// The user needs to update their config to include the source attribute.
+	if sourcePath == "" || data.Source.IsNull() || data.Source.IsUnknown() {
+		// Preserve the current state - source will be set in next apply.
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		return
+	}
+
 	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
 		// Source file was deleted - remove from state.
 		resp.State.RemoveResource(ctx)
@@ -600,6 +618,13 @@ func (r *FileResource) getSSHConfig(data *FileResourceModel) ssh.Config {
 		if !r.providerConfig.BastionPassword.IsNull() {
 			config.BastionPassword = r.providerConfig.BastionPassword.ValueString()
 		}
+	}
+
+	// Check insecure host key setting.
+	if !data.InsecureIgnoreHostKey.IsNull() && data.InsecureIgnoreHostKey.ValueBool() {
+		config.InsecureIgnoreHostKey = true
+	} else if r.providerConfig != nil && !r.providerConfig.InsecureIgnoreHostKey.IsNull() {
+		config.InsecureIgnoreHostKey = r.providerConfig.InsecureIgnoreHostKey.ValueBool()
 	}
 
 	return config

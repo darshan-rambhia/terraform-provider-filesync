@@ -65,6 +65,9 @@ type DirectoryResourceModel struct {
 	BastionKeyPath  types.String `tfsdk:"bastion_key_path"`
 	BastionPassword types.String `tfsdk:"bastion_password"`
 
+	// Optional - security settings.
+	InsecureIgnoreHostKey types.Bool `tfsdk:"insecure_ignore_host_key"`
+
 	// Optional - file attributes.
 	Owner types.String `tfsdk:"owner"`
 	Group types.String `tfsdk:"group"`
@@ -203,6 +206,12 @@ resource "filesync_directory" "configs" {
 				Sensitive:           true,
 			},
 
+			// Optional - security settings.
+			"insecure_ignore_host_key": schema.BoolAttribute{
+				MarkdownDescription: "Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.",
+				Optional:            true,
+			},
+
 			// Optional - file attributes.
 			"owner": schema.StringAttribute{
 				MarkdownDescription: "File owner on remote. Defaults to the SSH user.",
@@ -241,19 +250,31 @@ resource "filesync_directory" "configs" {
 			"source_hash": schema.StringAttribute{
 				MarkdownDescription: "Combined SHA256 hash of all source files.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					directorySourceHashPlanModifier{},
+				},
 			},
 			"file_count": schema.Int64Attribute{
 				MarkdownDescription: "Number of files in the directory (including those in subdirectories) that were synced. Excludes files matching the exclude patterns.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.Int64{
+					directoryFileCountPlanModifier{},
+				},
 			},
 			"total_size": schema.Int64Attribute{
 				MarkdownDescription: "Total size of all synced files in bytes.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.Int64{
+					directoryTotalSizePlanModifier{},
+				},
 			},
 			"file_hashes": schema.MapAttribute{
 				MarkdownDescription: "Map of relative file paths to their SHA256 hashes.",
 				Computed:            true,
 				ElementType:         types.StringType,
+				PlanModifiers: []planmodifier.Map{
+					directoryFileHashesPlanModifier{},
+				},
 			},
 		},
 	}
@@ -370,47 +391,28 @@ func (r *DirectoryResource) Read(ctx context.Context, req resource.ReadRequest, 
 
 	// Check if source directory still exists.
 	sourcePath := data.Source.ValueString()
+
+	// If source is not set (e.g., after import), don't remove from state.
+	// The user needs to update their config to include the source attribute.
+	if sourcePath == "" || data.Source.IsNull() || data.Source.IsUnknown() {
+		// Preserve the current state - source will be set in next apply.
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		return
+	}
+
 	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
 		resp.State.RemoveResource(ctx)
 		return
 	}
 
-	// Get exclude patterns.
-	excludePatterns := r.getExcludePatterns(ctx, &data, &resp.Diagnostics)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	// IMPORTANT: We do NOT update source_hash, file_count, total_size, or file_hashes here.
+	// These represent what was last successfully synced to the remote, not the current local state.
+	// This allows Terraform to detect local file changes during plan.
+	//
+	// The plan modifiers on these attributes compute the current local values
+	// and trigger an update when they differ from the stored state.
 
-	// Rescan local directory.
-	files, err := scanDirectory(sourcePath, excludePatterns)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to scan source directory", err.Error())
-		return
-	}
-
-	// Compute new hashes.
-	fileHashes := make(map[string]string)
-	var totalSize int64
-
-	for _, file := range files {
-		fileHashes[file.RelPath] = file.Hash
-		totalSize += file.Size
-	}
-
-	combinedHash := computeCombinedHash(files)
-
-	// Convert file hashes to types.Map
-	fileHashesMap, diags := types.MapValueFrom(ctx, types.StringType, fileHashes)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	data.SourceHash = types.StringValue(combinedHash)
-	data.FileCount = types.Int64Value(int64(len(files)))
-	data.TotalSize = types.Int64Value(totalSize)
-	data.FileHashes = fileHashesMap
-
+	// State is unchanged - we preserve the existing computed values.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -452,6 +454,12 @@ func (r *DirectoryResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	defer client.Close()
 
+	// Check if mode/owner/group changed - if so, we need to update all files.
+	modeChanged := data.Mode.ValueString() != state.Mode.ValueString()
+	ownerChanged := data.Owner.ValueString() != state.Owner.ValueString()
+	groupChanged := data.Group.ValueString() != state.Group.ValueString()
+	attributesChanged := modeChanged || ownerChanged || groupChanged
+
 	// Upload changed files.
 	newFileHashes := make(map[string]string)
 	currentFiles := make(map[string]bool)
@@ -464,23 +472,27 @@ func (r *DirectoryResource) Update(ctx context.Context, req resource.UpdateReque
 
 		// Check if file changed.
 		oldHash, existed := stateHashes[file.RelPath]
-		if existed && oldHash == file.Hash {
-			// File unchanged, skip upload.
+		fileUnchanged := existed && oldHash == file.Hash
+
+		if fileUnchanged && !attributesChanged {
+			// File and attributes unchanged, skip entirely.
 			newFileHashes[file.RelPath] = file.Hash
 			totalSize += file.Size
 			continue
 		}
 
-		// Upload file.
-		if err := client.UploadFile(localPath, remotePath); err != nil {
-			resp.Diagnostics.AddError(
-				"Failed to upload file",
-				fmt.Sprintf("File: %s, Error: %s", file.RelPath, err.Error()),
-			)
-			return
+		if !fileUnchanged {
+			// Upload file if content changed.
+			if err := client.UploadFile(localPath, remotePath); err != nil {
+				resp.Diagnostics.AddError(
+					"Failed to upload file",
+					fmt.Sprintf("File: %s, Error: %s", file.RelPath, err.Error()),
+				)
+				return
+			}
 		}
 
-		// Set ownership and permissions.
+		// Set ownership and permissions (always if file was uploaded or attributes changed).
 		if err := client.SetFileAttributes(
 			remotePath,
 			data.Owner.ValueString(),
@@ -706,6 +718,13 @@ func (r *DirectoryResource) createSSHClient(data *DirectoryResourceModel) (ssh.C
 		}
 	}
 
+	// Check insecure host key setting.
+	if !data.InsecureIgnoreHostKey.IsNull() && data.InsecureIgnoreHostKey.ValueBool() {
+		config.InsecureIgnoreHostKey = true
+	} else if r.providerConfig != nil && !r.providerConfig.InsecureIgnoreHostKey.IsNull() {
+		config.InsecureIgnoreHostKey = r.providerConfig.InsecureIgnoreHostKey.ValueBool()
+	}
+
 	factory := r.sshClientFactory
 	if factory == nil {
 		factory = DefaultSSHClientFactory
@@ -801,4 +820,159 @@ func computeCombinedHash(files []FileInfo) string {
 		_, _ = io.WriteString(h, "\n")
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// scanDirectoryForPlan scans a directory and returns file info and computed values.
+// This is used by plan modifiers to compute the expected state during planning.
+func scanDirectoryForPlan(ctx context.Context, req interface{ GetAttribute(context.Context, path.Path, interface{}) diag.Diagnostics }) ([]FileInfo, string, int64, int64, map[string]string, error) {
+	// Get source path from plan.
+	var sourcePath types.String
+	if diags := req.GetAttribute(ctx, path.Root("source"), &sourcePath); diags.HasError() || sourcePath.IsUnknown() || sourcePath.IsNull() {
+		return nil, "", 0, 0, nil, fmt.Errorf("source path not available")
+	}
+
+	// Get exclude patterns from plan.
+	var excludeList types.List
+	if diags := req.GetAttribute(ctx, path.Root("exclude"), &excludeList); diags.HasError() {
+		return nil, "", 0, 0, nil, fmt.Errorf("exclude patterns not available")
+	}
+
+	var excludePatterns []string
+	if !excludeList.IsNull() && !excludeList.IsUnknown() {
+		for _, v := range excludeList.Elements() {
+			if strVal, ok := v.(types.String); ok && !strVal.IsNull() && !strVal.IsUnknown() {
+				excludePatterns = append(excludePatterns, strVal.ValueString())
+			}
+		}
+	}
+
+	// Scan the directory.
+	files, err := scanDirectory(sourcePath.ValueString(), excludePatterns)
+	if err != nil {
+		return nil, "", 0, 0, nil, err
+	}
+
+	// Compute values.
+	fileHashes := make(map[string]string)
+	var totalSize int64
+	for _, file := range files {
+		fileHashes[file.RelPath] = file.Hash
+		totalSize += file.Size
+	}
+
+	combinedHash := computeCombinedHash(files)
+	fileCount := int64(len(files))
+
+	return files, combinedHash, fileCount, totalSize, fileHashes, nil
+}
+
+// directorySourceHashPlanModifier computes the combined hash during planning.
+type directorySourceHashPlanModifier struct{}
+
+func (m directorySourceHashPlanModifier) Description(_ context.Context) string {
+	return "Computes combined hash from current local source directory to detect changes."
+}
+
+func (m directorySourceHashPlanModifier) MarkdownDescription(_ context.Context) string {
+	return "Computes combined hash from current local source directory to detect changes."
+}
+
+func (m directorySourceHashPlanModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	// If resource is being destroyed, don't compute hash.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	_, combinedHash, _, _, _, err := scanDirectoryForPlan(ctx, req.Plan)
+	if err != nil {
+		// Directory doesn't exist or can't be read - let Create/Update handle the error.
+		resp.PlanValue = types.StringUnknown()
+		return
+	}
+
+	resp.PlanValue = types.StringValue(combinedHash)
+}
+
+// directoryFileCountPlanModifier computes the file count during planning.
+type directoryFileCountPlanModifier struct{}
+
+func (m directoryFileCountPlanModifier) Description(_ context.Context) string {
+	return "Computes file count from current local source directory."
+}
+
+func (m directoryFileCountPlanModifier) MarkdownDescription(_ context.Context) string {
+	return "Computes file count from current local source directory."
+}
+
+func (m directoryFileCountPlanModifier) PlanModifyInt64(ctx context.Context, req planmodifier.Int64Request, resp *planmodifier.Int64Response) {
+	// If resource is being destroyed, don't compute.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	_, _, fileCount, _, _, err := scanDirectoryForPlan(ctx, req.Plan)
+	if err != nil {
+		resp.PlanValue = types.Int64Unknown()
+		return
+	}
+
+	resp.PlanValue = types.Int64Value(fileCount)
+}
+
+// directoryTotalSizePlanModifier computes the total size during planning.
+type directoryTotalSizePlanModifier struct{}
+
+func (m directoryTotalSizePlanModifier) Description(_ context.Context) string {
+	return "Computes total size from current local source directory."
+}
+
+func (m directoryTotalSizePlanModifier) MarkdownDescription(_ context.Context) string {
+	return "Computes total size from current local source directory."
+}
+
+func (m directoryTotalSizePlanModifier) PlanModifyInt64(ctx context.Context, req planmodifier.Int64Request, resp *planmodifier.Int64Response) {
+	// If resource is being destroyed, don't compute.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	_, _, _, totalSize, _, err := scanDirectoryForPlan(ctx, req.Plan)
+	if err != nil {
+		resp.PlanValue = types.Int64Unknown()
+		return
+	}
+
+	resp.PlanValue = types.Int64Value(totalSize)
+}
+
+// directoryFileHashesPlanModifier computes the file hashes map during planning.
+type directoryFileHashesPlanModifier struct{}
+
+func (m directoryFileHashesPlanModifier) Description(_ context.Context) string {
+	return "Computes file hashes map from current local source directory."
+}
+
+func (m directoryFileHashesPlanModifier) MarkdownDescription(_ context.Context) string {
+	return "Computes file hashes map from current local source directory."
+}
+
+func (m directoryFileHashesPlanModifier) PlanModifyMap(ctx context.Context, req planmodifier.MapRequest, resp *planmodifier.MapResponse) {
+	// If resource is being destroyed, don't compute.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	_, _, _, _, fileHashes, err := scanDirectoryForPlan(ctx, req.Plan)
+	if err != nil {
+		resp.PlanValue = types.MapUnknown(types.StringType)
+		return
+	}
+
+	fileHashesMap, diags := types.MapValueFrom(ctx, types.StringType, fileHashes)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.PlanValue = fileHashesMap
 }

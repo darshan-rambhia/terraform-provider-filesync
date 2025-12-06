@@ -41,6 +41,9 @@ type FilesyncProviderModel struct {
 
 	// Connection pooling.
 	ConnectionPoolEnabled types.Bool `tfsdk:"connection_pool_enabled"`
+
+	// Host key verification.
+	InsecureIgnoreHostKey types.Bool `tfsdk:"insecure_ignore_host_key"`
 }
 
 func New(version string) func() provider.Provider {
@@ -142,6 +145,10 @@ resource "filesync_file" "config" {
 			},
 			"connection_pool_enabled": schema.BoolAttribute{
 				MarkdownDescription: "Enable SSH connection pooling for improved performance when managing multiple files on the same host. Connections are reused across resources and automatically cleaned up after 5 minutes of inactivity. Defaults to false.",
+				Optional:            true,
+			},
+			"insecure_ignore_host_key": schema.BoolAttribute{
+				MarkdownDescription: "Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.",
 				Optional:            true,
 			},
 		},

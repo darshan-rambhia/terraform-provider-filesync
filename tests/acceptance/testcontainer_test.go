@@ -260,34 +260,34 @@ func (c *SSHTestContainer) runCommand(command string) (string, error) {
 // ReadRemoteFile reads a file from the container.
 func (c *SSHTestContainer) ReadRemoteFile(t *testing.T, path string) (string, error) {
 	t.Helper()
-	return c.runCommand(fmt.Sprintf("cat %s", path))
+	return c.runCommand(fmt.Sprintf("cat %q", path))
 }
 
 // FileExists checks if a file exists in the container.
 func (c *SSHTestContainer) FileExists(t *testing.T, path string) bool {
 	t.Helper()
-	_, err := c.runCommand(fmt.Sprintf("test -f %s", path))
+	_, err := c.runCommand(fmt.Sprintf("test -f %q", path))
 	return err == nil
 }
 
 // GetFileMode gets the file mode of a remote file.
 func (c *SSHTestContainer) GetFileMode(t *testing.T, path string) (string, error) {
 	t.Helper()
-	return c.runCommand(fmt.Sprintf("stat -c '%%a' %s", path))
+	return c.runCommand(fmt.Sprintf("stat -c '%%a' %q", path))
 }
 
 // FileExistsNoHelper checks if a file exists without requiring *testing.T (for use in check functions).
 func (c *SSHTestContainer) FileExistsNoHelper(path string) bool {
-	_, err := c.runCommand(fmt.Sprintf("test -f %s", path))
+	_, err := c.runCommand(fmt.Sprintf("test -f %q", path))
 	return err == nil
 }
 
 // ReadRemoteFileNoHelper reads a file without requiring *testing.T (for use in check functions).
 func (c *SSHTestContainer) ReadRemoteFileNoHelper(path string) (string, error) {
-	return c.runCommand(fmt.Sprintf("cat %s", path))
+	return c.runCommand(fmt.Sprintf("cat %q", path))
 }
 
 // GetFileModeNoHelper gets file mode without requiring *testing.T (for use in check functions).
 func (c *SSHTestContainer) GetFileModeNoHelper(path string) (string, error) {
-	return c.runCommand(fmt.Sprintf("stat -c '%%a' %s", path))
+	return c.runCommand(fmt.Sprintf("stat -c '%%a' %q", path))
 }

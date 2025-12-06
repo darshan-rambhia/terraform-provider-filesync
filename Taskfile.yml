@@ -36,6 +36,8 @@ tasks:
 
   test:
     desc: Run acceptance tests with 5 parallel containers (requires Docker)
+    env:
+      TF_ACC: "1"
     cmds:
       - go test -v ./tests/acceptance -timeout 30m -parallel-containers=5
 

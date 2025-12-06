@@ -489,6 +489,13 @@ func buildDirectoryTerraformValue(t *testing.T, s schema.Schema, data DirectoryR
 		return i.ValueInt64()
 	}
 
+	boolVal := func(b types.Bool) interface{} {
+		if b.IsNull() || b.IsUnknown() {
+			return nil
+		}
+		return b.ValueBool()
+	}
+
 	// Build file_hashes map value.
 	var fileHashesVal interface{} = nil
 	if !data.FileHashes.IsNull() && !data.FileHashes.IsUnknown() {
@@ -518,31 +525,32 @@ func buildDirectoryTerraformValue(t *testing.T, s schema.Schema, data DirectoryR
 	return tftypes.NewValue(
 		s.Type().TerraformType(context.Background()),
 		map[string]tftypes.Value{
-			"source":               tftypes.NewValue(tftypes.String, strVal(data.Source)),
-			"destination":          tftypes.NewValue(tftypes.String, strVal(data.Destination)),
-			"host":                 tftypes.NewValue(tftypes.String, strVal(data.Host)),
-			"ssh_user":             tftypes.NewValue(tftypes.String, strVal(data.SSHUser)),
-			"ssh_private_key":      tftypes.NewValue(tftypes.String, strVal(data.SSHPrivateKey)),
-			"ssh_key_path":         tftypes.NewValue(tftypes.String, strVal(data.SSHKeyPath)),
-			"ssh_port":             tftypes.NewValue(tftypes.Number, int64Val(data.SSHPort)),
-			"ssh_password":         tftypes.NewValue(tftypes.String, strVal(data.SSHPassword)),
-			"ssh_certificate":      tftypes.NewValue(tftypes.String, strVal(data.SSHCertificate)),
-			"ssh_certificate_path": tftypes.NewValue(tftypes.String, strVal(data.SSHCertificatePath)),
-			"bastion_host":         tftypes.NewValue(tftypes.String, strVal(data.BastionHost)),
-			"bastion_port":         tftypes.NewValue(tftypes.Number, int64Val(data.BastionPort)),
-			"bastion_user":         tftypes.NewValue(tftypes.String, strVal(data.BastionUser)),
-			"bastion_private_key":  tftypes.NewValue(tftypes.String, strVal(data.BastionKey)),
-			"bastion_key_path":     tftypes.NewValue(tftypes.String, strVal(data.BastionKeyPath)),
-			"bastion_password":     tftypes.NewValue(tftypes.String, strVal(data.BastionPassword)),
-			"owner":                tftypes.NewValue(tftypes.String, strVal(data.Owner)),
-			"group":                tftypes.NewValue(tftypes.String, strVal(data.Group)),
-			"mode":                 tftypes.NewValue(tftypes.String, strVal(data.Mode)),
-			"exclude":              tftypes.NewValue(tftypes.List{ElementType: tftypes.String}, excludeVal),
-			"id":                   tftypes.NewValue(tftypes.String, strVal(data.ID)),
-			"source_hash":          tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
-			"file_count":           tftypes.NewValue(tftypes.Number, int64Val(data.FileCount)),
-			"total_size":           tftypes.NewValue(tftypes.Number, int64Val(data.TotalSize)),
-			"file_hashes":          tftypes.NewValue(tftypes.Map{ElementType: tftypes.String}, fileHashesVal),
+			"source":                   tftypes.NewValue(tftypes.String, strVal(data.Source)),
+			"destination":              tftypes.NewValue(tftypes.String, strVal(data.Destination)),
+			"host":                     tftypes.NewValue(tftypes.String, strVal(data.Host)),
+			"ssh_user":                 tftypes.NewValue(tftypes.String, strVal(data.SSHUser)),
+			"ssh_private_key":          tftypes.NewValue(tftypes.String, strVal(data.SSHPrivateKey)),
+			"ssh_key_path":             tftypes.NewValue(tftypes.String, strVal(data.SSHKeyPath)),
+			"ssh_port":                 tftypes.NewValue(tftypes.Number, int64Val(data.SSHPort)),
+			"ssh_password":             tftypes.NewValue(tftypes.String, strVal(data.SSHPassword)),
+			"ssh_certificate":          tftypes.NewValue(tftypes.String, strVal(data.SSHCertificate)),
+			"ssh_certificate_path":     tftypes.NewValue(tftypes.String, strVal(data.SSHCertificatePath)),
+			"bastion_host":             tftypes.NewValue(tftypes.String, strVal(data.BastionHost)),
+			"bastion_port":             tftypes.NewValue(tftypes.Number, int64Val(data.BastionPort)),
+			"bastion_user":             tftypes.NewValue(tftypes.String, strVal(data.BastionUser)),
+			"bastion_private_key":      tftypes.NewValue(tftypes.String, strVal(data.BastionKey)),
+			"bastion_key_path":         tftypes.NewValue(tftypes.String, strVal(data.BastionKeyPath)),
+			"bastion_password":         tftypes.NewValue(tftypes.String, strVal(data.BastionPassword)),
+			"insecure_ignore_host_key": tftypes.NewValue(tftypes.Bool, boolVal(data.InsecureIgnoreHostKey)),
+			"owner":                    tftypes.NewValue(tftypes.String, strVal(data.Owner)),
+			"group":                    tftypes.NewValue(tftypes.String, strVal(data.Group)),
+			"mode":                     tftypes.NewValue(tftypes.String, strVal(data.Mode)),
+			"exclude":                  tftypes.NewValue(tftypes.List{ElementType: tftypes.String}, excludeVal),
+			"id":                       tftypes.NewValue(tftypes.String, strVal(data.ID)),
+			"source_hash":              tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
+			"file_count":               tftypes.NewValue(tftypes.Number, int64Val(data.FileCount)),
+			"total_size":               tftypes.NewValue(tftypes.Number, int64Val(data.TotalSize)),
+			"file_hashes":              tftypes.NewValue(tftypes.Map{ElementType: tftypes.String}, fileHashesVal),
 		},
 	)
 }
