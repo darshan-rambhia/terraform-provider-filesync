@@ -7,11 +7,14 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // generateTestKey creates a temporary RSA private key for testing.
@@ -2262,4 +2265,137 @@ func TestExpandPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildHostKeyCallback tests the host key callback builder.
+func TestBuildHostKeyCallback(t *testing.T) {
+	t.Run("insecure_ignore_host_key", func(t *testing.T) {
+		config := Config{
+			InsecureIgnoreHostKey: true,
+		}
+		callback, err := buildHostKeyCallback(config)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if callback == nil {
+			t.Error("expected non-nil callback")
+		}
+	})
+
+	t.Run("known_hosts_file_not_found", func(t *testing.T) {
+		config := Config{
+			KnownHostsFile: "/nonexistent/known_hosts",
+		}
+		_, err := buildHostKeyCallback(config)
+		if err == nil {
+			t.Error("expected error for nonexistent known_hosts file")
+		}
+	})
+
+	t.Run("known_hosts_file_invalid_format", func(t *testing.T) {
+		// Create a file with invalid known_hosts content.
+		tmpDir := t.TempDir()
+		badFile := filepath.Join(tmpDir, "bad_known_hosts")
+		// Write invalid content (not a valid known_hosts format).
+		if err := os.WriteFile(badFile, []byte("invalid content not a valid host key"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		config := Config{
+			KnownHostsFile: badFile,
+		}
+		// knownhosts.New may or may not return an error for invalid content,
+		// but the callback should be created or an error returned.
+		callback, err := buildHostKeyCallback(config)
+		// Either returns an error or a callback (depends on knownhosts implementation).
+		if err == nil && callback == nil {
+			t.Error("expected either error or valid callback")
+		}
+	})
+
+	t.Run("valid_known_hosts_file", func(t *testing.T) {
+		// Create a valid known_hosts file with a real SSH public key.
+		tmpDir := t.TempDir()
+		knownHostsFile := filepath.Join(tmpDir, "known_hosts")
+
+		// Generate a test RSA key to get a valid public key.
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sshPubKey, err := gossh.NewPublicKey(&key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Format as known_hosts entry.
+		validEntry := fmt.Sprintf("example.com %s", string(gossh.MarshalAuthorizedKey(sshPubKey)))
+		if err := os.WriteFile(knownHostsFile, []byte(validEntry), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		config := Config{
+			KnownHostsFile: knownHostsFile,
+		}
+		callback, err := buildHostKeyCallback(config)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if callback == nil {
+			t.Error("expected non-nil callback")
+		}
+	})
+
+	t.Run("empty_config_returns_callback", func(t *testing.T) {
+		// When no known_hosts is configured, should return a callback
+		// (either from default known_hosts or fallback permissive mode).
+		config := Config{
+			InsecureIgnoreHostKey: false,
+			KnownHostsFile:        "",
+		}
+		callback, err := buildHostKeyCallback(config)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if callback == nil {
+			t.Error("expected non-nil callback")
+		}
+	})
+
+	t.Run("tilde_expansion_in_known_hosts", func(t *testing.T) {
+		config := Config{
+			KnownHostsFile: "~/nonexistent_known_hosts_file",
+		}
+		_, err := buildHostKeyCallback(config)
+		// Should fail because the expanded path doesn't exist.
+		if err == nil {
+			t.Error("expected error for nonexistent expanded path")
+		}
+	})
+}
+
+// TestSFTPClientWrapper tests the SFTP client wrapper methods.
+func TestSFTPClientWrapper(t *testing.T) {
+	t.Run("wrapper_implements_interface", func(t *testing.T) {
+		// Verify that SFTPClientWrapper implements SFTPClientInterface.
+		var _ SFTPClientInterface = (*SFTPClientWrapper)(nil)
+	})
+}
+
+// TestDefaultPoolWrappers tests the default pool wrapper functions.
+func TestDefaultPoolWrappers(t *testing.T) {
+	t.Run("release_and_close_without_connections", func(t *testing.T) {
+		// These should not panic when called without active connections.
+		config := Config{
+			Host: "test.example.com",
+			Port: 22,
+			User: "testuser",
+		}
+
+		// Release should not panic even if connection doesn't exist.
+		ReleaseConnection(config)
+
+		// CloseAllConnections should not panic.
+		CloseAllConnections()
+	})
 }

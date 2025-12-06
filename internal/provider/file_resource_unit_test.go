@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -1172,4 +1173,257 @@ func buildTerraformValue(t *testing.T, s schema.Schema, data FileResourceModel) 
 	}
 
 	return tftypes.NewValue(attrTypes, vals)
+}
+
+// TestSourceHashPlanModifier tests the sourceHashPlanModifier.
+func TestSourceHashPlanModifier(t *testing.T) {
+	t.Run("description", func(t *testing.T) {
+		m := sourceHashPlanModifier{}
+		desc := m.Description(context.Background())
+		if desc == "" {
+			t.Error("Description should not be empty")
+		}
+		mdDesc := m.MarkdownDescription(context.Background())
+		if mdDesc == "" {
+			t.Error("MarkdownDescription should not be empty")
+		}
+	})
+
+	t.Run("computes hash for existing file", func(t *testing.T) {
+		// Create a temp file.
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test.txt")
+		if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		m := sourceHashPlanModifier{}
+
+		// Create a plan with the source attribute.
+		planVal := tftypes.NewValue(tftypes.Object{
+			AttributeTypes: map[string]tftypes.Type{
+				"source":      tftypes.String,
+				"source_hash": tftypes.String,
+			},
+		}, map[string]tftypes.Value{
+			"source":      tftypes.NewValue(tftypes.String, testFile),
+			"source_hash": tftypes.NewValue(tftypes.String, nil),
+		})
+
+		planSchema := schema.Schema{
+			Attributes: map[string]schema.Attribute{
+				"source":      schema.StringAttribute{},
+				"source_hash": schema.StringAttribute{Computed: true},
+			},
+		}
+
+		plan := tfsdk.Plan{
+			Raw:    planVal,
+			Schema: planSchema,
+		}
+
+		req := planmodifier.StringRequest{
+			Plan:       plan,
+			PlanValue:  types.StringNull(),
+			StateValue: types.StringValue("old-hash"),
+		}
+		resp := &planmodifier.StringResponse{}
+
+		m.PlanModifyString(context.Background(), req, resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Errorf("unexpected error: %v", resp.Diagnostics)
+		}
+
+		// Should compute a hash.
+		if resp.PlanValue.IsNull() || resp.PlanValue.IsUnknown() {
+			t.Error("expected a computed hash value")
+		}
+
+		hash := resp.PlanValue.ValueString()
+		if len(hash) == 0 || hash[:7] != "sha256:" {
+			t.Errorf("expected sha256 hash, got: %s", hash)
+		}
+	})
+
+	t.Run("returns unknown for missing file", func(t *testing.T) {
+		m := sourceHashPlanModifier{}
+
+		planVal := tftypes.NewValue(tftypes.Object{
+			AttributeTypes: map[string]tftypes.Type{
+				"source":      tftypes.String,
+				"source_hash": tftypes.String,
+			},
+		}, map[string]tftypes.Value{
+			"source":      tftypes.NewValue(tftypes.String, "/nonexistent/file.txt"),
+			"source_hash": tftypes.NewValue(tftypes.String, nil),
+		})
+
+		planSchema := schema.Schema{
+			Attributes: map[string]schema.Attribute{
+				"source":      schema.StringAttribute{},
+				"source_hash": schema.StringAttribute{Computed: true},
+			},
+		}
+
+		plan := tfsdk.Plan{
+			Raw:    planVal,
+			Schema: planSchema,
+		}
+
+		req := planmodifier.StringRequest{
+			Plan:      plan,
+			PlanValue: types.StringNull(),
+		}
+		resp := &planmodifier.StringResponse{}
+
+		m.PlanModifyString(context.Background(), req, resp)
+
+		if !resp.PlanValue.IsUnknown() {
+			t.Error("expected unknown value for missing file")
+		}
+	})
+
+	t.Run("skips on destroy", func(t *testing.T) {
+		m := sourceHashPlanModifier{}
+
+		// Null plan means destroy.
+		req := planmodifier.StringRequest{
+			Plan: tfsdk.Plan{Raw: tftypes.NewValue(tftypes.Object{}, nil)},
+		}
+		resp := &planmodifier.StringResponse{
+			PlanValue: types.StringValue("original"),
+		}
+
+		m.PlanModifyString(context.Background(), req, resp)
+
+		// Should not modify the value.
+		if resp.PlanValue.ValueString() != "original" {
+			t.Error("should not modify value on destroy")
+		}
+	})
+}
+
+// TestSourceSizePlanModifier tests the sourceSizePlanModifier.
+func TestSourceSizePlanModifier(t *testing.T) {
+	t.Run("description", func(t *testing.T) {
+		m := sourceSizePlanModifier{}
+		desc := m.Description(context.Background())
+		if desc == "" {
+			t.Error("Description should not be empty")
+		}
+		mdDesc := m.MarkdownDescription(context.Background())
+		if mdDesc == "" {
+			t.Error("MarkdownDescription should not be empty")
+		}
+	})
+
+	t.Run("computes size for existing file", func(t *testing.T) {
+		// Create a temp file with known content.
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test.txt")
+		content := []byte("test content 12345")
+		if err := os.WriteFile(testFile, content, 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		m := sourceSizePlanModifier{}
+
+		planVal := tftypes.NewValue(tftypes.Object{
+			AttributeTypes: map[string]tftypes.Type{
+				"source": tftypes.String,
+				"size":   tftypes.Number,
+			},
+		}, map[string]tftypes.Value{
+			"source": tftypes.NewValue(tftypes.String, testFile),
+			"size":   tftypes.NewValue(tftypes.Number, nil),
+		})
+
+		planSchema := schema.Schema{
+			Attributes: map[string]schema.Attribute{
+				"source": schema.StringAttribute{},
+				"size":   schema.Int64Attribute{Computed: true},
+			},
+		}
+
+		plan := tfsdk.Plan{
+			Raw:    planVal,
+			Schema: planSchema,
+		}
+
+		req := planmodifier.Int64Request{
+			Plan:      plan,
+			PlanValue: types.Int64Null(),
+		}
+		resp := &planmodifier.Int64Response{}
+
+		m.PlanModifyInt64(context.Background(), req, resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Errorf("unexpected error: %v", resp.Diagnostics)
+		}
+
+		if resp.PlanValue.IsNull() || resp.PlanValue.IsUnknown() {
+			t.Error("expected a computed size value")
+		}
+
+		if resp.PlanValue.ValueInt64() != int64(len(content)) {
+			t.Errorf("expected size %d, got %d", len(content), resp.PlanValue.ValueInt64())
+		}
+	})
+
+	t.Run("returns unknown for missing file", func(t *testing.T) {
+		m := sourceSizePlanModifier{}
+
+		planVal := tftypes.NewValue(tftypes.Object{
+			AttributeTypes: map[string]tftypes.Type{
+				"source": tftypes.String,
+				"size":   tftypes.Number,
+			},
+		}, map[string]tftypes.Value{
+			"source": tftypes.NewValue(tftypes.String, "/nonexistent/file.txt"),
+			"size":   tftypes.NewValue(tftypes.Number, nil),
+		})
+
+		planSchema := schema.Schema{
+			Attributes: map[string]schema.Attribute{
+				"source": schema.StringAttribute{},
+				"size":   schema.Int64Attribute{Computed: true},
+			},
+		}
+
+		plan := tfsdk.Plan{
+			Raw:    planVal,
+			Schema: planSchema,
+		}
+
+		req := planmodifier.Int64Request{
+			Plan:      plan,
+			PlanValue: types.Int64Null(),
+		}
+		resp := &planmodifier.Int64Response{}
+
+		m.PlanModifyInt64(context.Background(), req, resp)
+
+		if !resp.PlanValue.IsUnknown() {
+			t.Error("expected unknown value for missing file")
+		}
+	})
+
+	t.Run("skips on destroy", func(t *testing.T) {
+		m := sourceSizePlanModifier{}
+
+		req := planmodifier.Int64Request{
+			Plan: tfsdk.Plan{Raw: tftypes.NewValue(tftypes.Object{}, nil)},
+		}
+		resp := &planmodifier.Int64Response{
+			PlanValue: types.Int64Value(999),
+		}
+
+		m.PlanModifyInt64(context.Background(), req, resp)
+
+		if resp.PlanValue.ValueInt64() != 999 {
+			t.Error("should not modify value on destroy")
+		}
+	})
 }

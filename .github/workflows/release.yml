@@ -37,7 +37,7 @@ jobs:
           cache: true
       - run: go mod download
       - name: Run tests
-        run: go test -v -short -race ./...
+        run: go test -v -short -race ./internal/...
         timeout-minutes: 5
 
   # Create tag

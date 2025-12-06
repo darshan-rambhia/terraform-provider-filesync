@@ -248,10 +248,16 @@ resource "filesync_file" "nginx_config" {
 			"source_hash": schema.StringAttribute{
 				MarkdownDescription: "SHA256 hash of the source file in format `sha256:<hex>`. Updated when local file changes.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					sourceHashPlanModifier{},
+				},
 			},
 			"size": schema.Int64Attribute{
 				MarkdownDescription: "Size of the file in bytes.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.Int64{
+					sourceSizePlanModifier{},
+				},
 			},
 		},
 	}
@@ -330,9 +336,13 @@ func (r *FileResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	// Read is called during plan - only check local file.
-	// We intentionally don't check remote here to keep plan fast.
-	// Remote drift is detected during apply.
+	// Read refreshes state from the resource.
+	// IMPORTANT: We do NOT update source_hash here. The source_hash represents
+	// what was last successfully synced to the remote, not the current local file.
+	// This allows Terraform to detect local file changes during plan.
+	//
+	// The plan modifier on source_hash computes the current local file hash
+	// and triggers an update when it differs from the stored state hash.
 
 	sourcePath := data.Source.ValueString()
 	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
@@ -341,16 +351,7 @@ func (r *FileResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	// Update hash from current local file.
-	hash, size, err := hashFile(sourcePath)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to read source file", err.Error())
-		return
-	}
-
-	data.SourceHash = types.StringValue(hash)
-	data.Size = types.Int64Value(size)
-
+	// State is unchanged - we preserve the existing source_hash.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -663,4 +664,80 @@ func expandPath(path string) string {
 		return filepath.Join(home, path[1:])
 	}
 	return path
+}
+
+// sourceHashPlanModifier computes the source file hash during planning.
+// This allows Terraform to detect local file changes and trigger updates.
+type sourceHashPlanModifier struct{}
+
+func (m sourceHashPlanModifier) Description(_ context.Context) string {
+	return "Computes hash from current local source file to detect changes."
+}
+
+func (m sourceHashPlanModifier) MarkdownDescription(_ context.Context) string {
+	return "Computes hash from current local source file to detect changes."
+}
+
+func (m sourceHashPlanModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	// If resource is being destroyed, don't compute hash.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	// Get the source path from the plan.
+	var sourcePath types.String
+	diags := req.Plan.GetAttribute(ctx, path.Root("source"), &sourcePath)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() || sourcePath.IsUnknown() || sourcePath.IsNull() {
+		return
+	}
+
+	// Compute hash of the current local file.
+	hash, _, err := hashFile(sourcePath.ValueString())
+	if err != nil {
+		// File doesn't exist or can't be read - let Create/Update handle the error.
+		// Use unknown value to indicate we can't compute it.
+		resp.PlanValue = types.StringUnknown()
+		return
+	}
+
+	// Set the planned value to the current local file hash.
+	// If this differs from state, Terraform will trigger an update.
+	resp.PlanValue = types.StringValue(hash)
+}
+
+// sourceSizePlanModifier computes the source file size during planning.
+type sourceSizePlanModifier struct{}
+
+func (m sourceSizePlanModifier) Description(_ context.Context) string {
+	return "Computes size from current local source file."
+}
+
+func (m sourceSizePlanModifier) MarkdownDescription(_ context.Context) string {
+	return "Computes size from current local source file."
+}
+
+func (m sourceSizePlanModifier) PlanModifyInt64(ctx context.Context, req planmodifier.Int64Request, resp *planmodifier.Int64Response) {
+	// If resource is being destroyed, don't compute size.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	// Get the source path from the plan.
+	var sourcePath types.String
+	diags := req.Plan.GetAttribute(ctx, path.Root("source"), &sourcePath)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() || sourcePath.IsUnknown() || sourcePath.IsNull() {
+		return
+	}
+
+	// Get file size.
+	info, err := os.Stat(sourcePath.ValueString())
+	if err != nil {
+		// File doesn't exist or can't be read - let Create/Update handle the error.
+		resp.PlanValue = types.Int64Unknown()
+		return
+	}
+
+	resp.PlanValue = types.Int64Value(info.Size())
 }

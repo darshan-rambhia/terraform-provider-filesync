@@ -562,3 +562,65 @@ func TestAccFileResource_ConnectionPoolingUpdate(t *testing.T) {
 		},
 	})
 }
+
+// TestAccFileResource_LocalFileChangeDetection is a regression test for the bug where
+// modifying the local source file didn't trigger an update because Read was incorrectly
+// updating source_hash in state. This test explicitly verifies that:
+// 1. The plan modifier correctly computes the new hash during planning
+// 2. An update is triggered and the remote file is actually updated.
+func TestAccFileResource_LocalFileChangeDetection(t *testing.T) {
+	t.Parallel()
+
+	container := SetupSSHContainer(t)
+	cfg := NewTestSSHConfig(container)
+
+	sourceFile := CreateTestSourceFile(t, "version 1 content\n")
+	remotePath := "/tmp/test-local-change-detection.txt"
+
+	var initialHash string
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Create the file.
+			{
+				Config: cfg.FileResourceConfig("test", sourceFile, remotePath, "0644"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					CheckRemoteFileExists(container, remotePath),
+					CheckRemoteFileContent(container, remotePath, "version 1 content\n"),
+					CaptureHash("filesync_file.test", &initialHash),
+				),
+			},
+			// Step 2: Modify LOCAL file only (no config change).
+			// This is the key regression test - the plan modifier must detect this change.
+			{
+				PreConfig: func() {
+					// Modify the local source file.
+					if err := os.WriteFile(sourceFile, []byte("version 2 content\n"), 0644); err != nil {
+						t.Fatalf("failed to update source file: %v", err)
+					}
+				},
+				Config: cfg.FileResourceConfig("test", sourceFile, remotePath, "0644"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					// CRITICAL: Verify the remote file was ACTUALLY updated.
+					// This would fail with the bug because Update was never called.
+					CheckRemoteFileContent(container, remotePath, "version 2 content\n"),
+					// Verify the hash changed in state.
+					CheckHashChanged("filesync_file.test", &initialHash),
+				),
+			},
+			// Step 3: Modify again to ensure it's not a one-time fluke.
+			{
+				PreConfig: func() {
+					if err := os.WriteFile(sourceFile, []byte("version 3 content\n"), 0644); err != nil {
+						t.Fatalf("failed to update source file: %v", err)
+					}
+				},
+				Config: cfg.FileResourceConfig("test", sourceFile, remotePath, "0644"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					CheckRemoteFileContent(container, remotePath, "version 3 content\n"),
+				),
+			},
+		},
+	})
+}
