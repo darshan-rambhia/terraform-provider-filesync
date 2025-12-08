@@ -460,9 +460,9 @@ func TestExpandPathUnit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Just ensure it doesn't panic.
-			result := expandPath(tt.input)
+			result := ExpandPath(tt.input)
 			if result == "" && tt.input != "" {
-				t.Error("expandPath() returned empty for non-empty input")
+				t.Error("ExpandPath() returned empty for non-empty input")
 			}
 		})
 	}

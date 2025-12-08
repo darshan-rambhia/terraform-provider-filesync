@@ -63,9 +63,9 @@ func TestExpandPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := expandPath(tt.input)
+			result := ExpandPath(tt.input)
 			if result != tt.expected {
-				t.Errorf("expandPath(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("ExpandPath(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -187,7 +187,7 @@ func TestScanDirectory(t *testing.T) {
 	}
 
 	// Scan without excludes.
-	result, err := scanDirectory(tmpDir, nil)
+	result, err := scanDirectory(tmpDir, nil, "follow")
 	if err != nil {
 		t.Fatalf("scanDirectory() error: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestScanDirectory_WithExcludes(t *testing.T) {
 	}
 
 	excludes := []string{"*.tmp", "*.bak", ".git"}
-	result, err := scanDirectory(tmpDir, excludes)
+	result, err := scanDirectory(tmpDir, excludes, "follow")
 	if err != nil {
 		t.Fatalf("scanDirectory() error: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestScanDirectory_WithExcludes(t *testing.T) {
 func TestScanDirectory_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	result, err := scanDirectory(tmpDir, nil)
+	result, err := scanDirectory(tmpDir, nil, "follow")
 	if err != nil {
 		t.Fatalf("scanDirectory() error: %v", err)
 	}
@@ -265,9 +265,126 @@ func TestScanDirectory_Empty(t *testing.T) {
 
 // TestScanDirectory_NotFound tests scanDirectory with non-existent directory.
 func TestScanDirectory_NotFound(t *testing.T) {
-	_, err := scanDirectory("/nonexistent/directory", nil)
+	_, err := scanDirectory("/nonexistent/directory", nil, "follow")
 	if err == nil {
 		t.Error("scanDirectory() expected error for non-existent directory")
+	}
+}
+
+// TestScanDirectory_SymlinkFollow tests symlink handling with "follow" policy.
+func TestScanDirectory_SymlinkFollow(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a regular file.
+	if err := os.WriteFile(filepath.Join(tmpDir, "regular.txt"), []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to create regular file: %v", err)
+	}
+
+	// Create a symlink to the regular file.
+	if err := os.Symlink(filepath.Join(tmpDir, "regular.txt"), filepath.Join(tmpDir, "link.txt")); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	// Scan with "follow" policy - symlink should be followed and content hashed.
+	result, err := scanDirectory(tmpDir, nil, "follow")
+	if err != nil {
+		t.Fatalf("scanDirectory() error: %v", err)
+	}
+
+	// Should find both files (regular + symlink as regular file).
+	if len(result) != 2 {
+		t.Errorf("scanDirectory() with follow found %d files, want 2", len(result))
+	}
+
+	// Both should have the same hash (symlink follows target).
+	var regularHash, linkHash string
+	for _, f := range result {
+		if f.RelPath == "regular.txt" {
+			regularHash = f.Hash
+		}
+		if f.RelPath == "link.txt" {
+			linkHash = f.Hash
+		}
+	}
+
+	if regularHash != linkHash {
+		t.Errorf("scanDirectory() with follow: symlink hash %s != regular hash %s", linkHash, regularHash)
+	}
+}
+
+// TestScanDirectory_SymlinkSkip tests symlink handling with "skip" policy.
+func TestScanDirectory_SymlinkSkip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a regular file.
+	if err := os.WriteFile(filepath.Join(tmpDir, "regular.txt"), []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to create regular file: %v", err)
+	}
+
+	// Create a symlink to the regular file.
+	if err := os.Symlink(filepath.Join(tmpDir, "regular.txt"), filepath.Join(tmpDir, "link.txt")); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	// Scan with "skip" policy - symlink should be ignored.
+	result, err := scanDirectory(tmpDir, nil, "skip")
+	if err != nil {
+		t.Fatalf("scanDirectory() error: %v", err)
+	}
+
+	// Should only find the regular file, not the symlink.
+	if len(result) != 1 {
+		t.Errorf("scanDirectory() with skip found %d files, want 1", len(result))
+	}
+
+	if len(result) > 0 && result[0].RelPath != "regular.txt" {
+		t.Errorf("scanDirectory() with skip found %s, want regular.txt", result[0].RelPath)
+	}
+}
+
+// TestScanDirectory_SymlinkPreserve tests symlink handling with "preserve" policy.
+func TestScanDirectory_SymlinkPreserve(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a regular file.
+	if err := os.WriteFile(filepath.Join(tmpDir, "regular.txt"), []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to create regular file: %v", err)
+	}
+
+	// Create a symlink to the regular file.
+	symlinkPath := filepath.Join(tmpDir, "link.txt")
+	targetPath := filepath.Join(tmpDir, "regular.txt")
+	if err := os.Symlink(targetPath, symlinkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	// Scan with "preserve" policy - symlink should be recorded with target info.
+	result, err := scanDirectory(tmpDir, nil, "preserve")
+	if err != nil {
+		t.Fatalf("scanDirectory() error: %v", err)
+	}
+
+	// Should find both files.
+	if len(result) != 2 {
+		t.Errorf("scanDirectory() with preserve found %d files, want 2", len(result))
+	}
+
+	// Find the symlink entry.
+	var foundSymlink bool
+	for _, f := range result {
+		if f.RelPath == "link.txt" {
+			foundSymlink = true
+			if !f.IsSymlink {
+				t.Error("scanDirectory() with preserve: link.txt should be marked as symlink")
+			}
+			if f.SymlinkTarget != targetPath {
+				t.Errorf("scanDirectory() with preserve: symlink target %s != %s", f.SymlinkTarget, targetPath)
+			}
+		}
+	}
+
+	if !foundSymlink {
+		t.Error("scanDirectory() with preserve: symlink file not found")
 	}
 }
 
@@ -846,6 +963,7 @@ func buildProviderConfigValue(t *testing.T, schemaResp provider.SchemaResponse, 
 			"bastion_password":         tftypes.NewValue(tftypes.String, strVal(data.BastionPassword)),
 			"connection_pool_enabled":  tftypes.NewValue(tftypes.Bool, boolVal(data.ConnectionPoolEnabled)),
 			"insecure_ignore_host_key": tftypes.NewValue(tftypes.Bool, boolVal(data.InsecureIgnoreHostKey)),
+			"max_retries":              tftypes.NewValue(tftypes.Number, int64Val(data.MaxRetries)),
 		},
 	)
 }

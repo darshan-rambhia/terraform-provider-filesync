@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"time"
 
+	"github.com/darshan-rambhia/gosftp"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
@@ -16,6 +18,7 @@ var _ provider.Provider = &FilesyncProvider{}
 // FilesyncProvider defines the provider implementation.
 type FilesyncProvider struct {
 	version string
+	pool    *gosftp.ConnectionPool
 }
 
 // FilesyncProviderModel describes the provider data model.
@@ -44,6 +47,12 @@ type FilesyncProviderModel struct {
 
 	// Host key verification.
 	InsecureIgnoreHostKey types.Bool `tfsdk:"insecure_ignore_host_key"`
+
+	// Retry configuration.
+	MaxRetries types.Int64 `tfsdk:"max_retries"`
+
+	// Connection pool instance (runtime, not from config).
+	pool *gosftp.ConnectionPool
 }
 
 func New(version string) func() provider.Provider {
@@ -151,6 +160,10 @@ resource "filesync_file" "config" {
 				MarkdownDescription: "Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.",
 				Optional:            true,
 			},
+			"max_retries": schema.Int64Attribute{
+				MarkdownDescription: "Maximum number of retry attempts for transient SSH failures (connection timeouts, network errors). Set to 0 to disable retries. Defaults to 3.",
+				Optional:            true,
+			},
 		},
 	}
 }
@@ -161,6 +174,14 @@ func (p *FilesyncProvider) Configure(ctx context.Context, req provider.Configure
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	// Initialize connection pool if enabled.
+	if !config.ConnectionPoolEnabled.IsNull() && config.ConnectionPoolEnabled.ValueBool() {
+		// Create a connection pool with 5 minute idle timeout.
+		config.pool = gosftp.NewConnectionPool(5 * time.Minute)
+		// Store pool in provider for potential cleanup.
+		p.pool = config.pool
 	}
 
 	// Make provider config available to resources.
