@@ -39,12 +39,12 @@ tasks:
     env:
       TF_ACC: "1"
     cmds:
-      - go test -v ./tests/acceptance -timeout 30m -parallel-containers=5
+      - go test --race -v ./tests/acceptance -timeout 30m -parallel-containers=5
 
   test:unit:
     desc: Run unit tests only (skip acceptance tests)
     cmds:
-      - go test -v -short ./internal/...
+      - go test --race -v -short ./internal/...
 
   test:acceptance:
     desc: Run acceptance tests with configurable parallelism
@@ -59,7 +59,7 @@ tasks:
     desc: Run tests with coverage and generate HTML report
     cmds:
       - mkdir -p coverage
-      - go test -short -coverprofile=coverage/coverage.out -covermode=atomic ./internal/...
+      - go test --race -short -coverprofile=coverage/coverage.out -covermode=atomic ./internal/...
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
       - go tool cover -func=coverage/coverage.out | grep total | awk '{print "Total coverage:", $3}'
       - echo "Coverage report generated at coverage/coverage.html"

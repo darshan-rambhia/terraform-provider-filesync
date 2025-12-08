@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/darshan-rambhia/gosftp"
 )
 
 // MockSSHClient is a mock implementation of gosftp.ClientInterface for testing.
 type MockSSHClient struct {
+	// Synchronization.
+	mu sync.Mutex
+
 	// Configuration.
 	UploadedFiles  map[string]string // remotePath -> localPath
 	FileHashes     map[string]string // remotePath -> hash
@@ -60,25 +64,34 @@ func (m *MockSSHClient) Close() error {
 
 // UploadFile implements gosftp.ClientInterface.
 func (m *MockSSHClient) UploadFile(ctx context.Context, localPath, remotePath string) error {
+	m.mu.Lock()
 	m.UploadCalls++
 	if m.UploadError != nil {
+		m.mu.Unlock()
 		return m.UploadError
 	}
 	m.UploadedFiles[remotePath] = localPath
 	m.ExistingFiles[remotePath] = true
+	m.mu.Unlock()
 
 	// Read local file content and compute hash.
 	content, err := os.ReadFile(localPath)
 	if err != nil {
 		return err
 	}
+
+	m.mu.Lock()
 	m.FileContents[remotePath] = content
+	m.mu.Unlock()
 
 	return nil
 }
 
 // GetFileHash implements gosftp.ClientInterface.
 func (m *MockSSHClient) GetFileHash(ctx context.Context, remotePath string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.GetHashCalls++
 	if m.GetHashError != nil {
 		return "", m.GetHashError
@@ -92,6 +105,9 @@ func (m *MockSSHClient) GetFileHash(ctx context.Context, remotePath string) (str
 
 // SetFileAttributes implements gosftp.ClientInterface.
 func (m *MockSSHClient) SetFileAttributes(ctx context.Context, remotePath, owner, group, mode string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.SetAttributeCalls++
 	if m.SetAttributeError != nil {
 		return m.SetAttributeError
@@ -106,6 +122,9 @@ func (m *MockSSHClient) SetFileAttributes(ctx context.Context, remotePath, owner
 
 // DeleteFile implements gosftp.ClientInterface.
 func (m *MockSSHClient) DeleteFile(ctx context.Context, remotePath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.DeleteCalls++
 	if m.DeleteError != nil {
 		return m.DeleteError
@@ -119,6 +138,9 @@ func (m *MockSSHClient) DeleteFile(ctx context.Context, remotePath string) error
 
 // FileExists implements gosftp.ClientInterface.
 func (m *MockSSHClient) FileExists(ctx context.Context, remotePath string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.ExistsError != nil {
 		return false, m.ExistsError
 	}
@@ -127,6 +149,9 @@ func (m *MockSSHClient) FileExists(ctx context.Context, remotePath string) (bool
 
 // GetFileInfo implements gosftp.ClientInterface.
 func (m *MockSSHClient) GetFileInfo(ctx context.Context, remotePath string) (os.FileInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if !m.ExistingFiles[remotePath] {
 		return nil, os.ErrNotExist
 	}
@@ -136,6 +161,9 @@ func (m *MockSSHClient) GetFileInfo(ctx context.Context, remotePath string) (os.
 
 // ReadFileContent implements gosftp.ClientInterface.
 func (m *MockSSHClient) ReadFileContent(ctx context.Context, remotePath string, maxBytes int64) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.ReadContentError != nil {
 		return nil, m.ReadContentError
 	}
