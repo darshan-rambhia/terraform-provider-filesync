@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/darshan-rambhia/gosftp"
 	"github.com/darshan-rambhia/terraform-provider-filesync/internal/diff"
-	"github.com/darshan-rambhia/terraform-provider-filesync/internal/ssh"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -19,7 +19,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
@@ -34,11 +36,11 @@ func NewFileResource() resource.Resource {
 
 // SSHClientFactory is a function type that creates SSH clients.
 // This allows for dependency injection in tests.
-type SSHClientFactory func(config ssh.Config) (ssh.ClientInterface, error)
+type SSHClientFactory func(config gosftp.Config) (gosftp.ClientInterface, error)
 
 // DefaultSSHClientFactory creates real SSH clients.
-var DefaultSSHClientFactory SSHClientFactory = func(config ssh.Config) (ssh.ClientInterface, error) {
-	return ssh.NewClient(config)
+var DefaultSSHClientFactory SSHClientFactory = func(config gosftp.Config) (gosftp.ClientInterface, error) {
+	return gosftp.NewClient(config)
 }
 
 // FileResource defines the resource implementation.
@@ -149,6 +151,9 @@ resource "filesync_file" "nginx_config" {
 			"destination": schema.StringAttribute{
 				MarkdownDescription: "Absolute path on the remote host where the file should be placed.",
 				Required:            true,
+				Validators: []validator.String{
+					AbsolutePath(),
+				},
 			},
 			"host": schema.StringAttribute{
 				MarkdownDescription: "Remote host address (IP or hostname).",
@@ -166,10 +171,16 @@ resource "filesync_file" "nginx_config" {
 				MarkdownDescription: "SSH private key content. Mutually exclusive with ssh_key_path.",
 				Optional:            true,
 				Sensitive:           true,
+				Validators: []validator.String{
+					stringvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("ssh_key_path")),
+				},
 			},
 			"ssh_key_path": schema.StringAttribute{
 				MarkdownDescription: "Path to SSH private key file. Mutually exclusive with ssh_private_key.",
 				Optional:            true,
+				Validators: []validator.String{
+					stringvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("ssh_private_key")),
+				},
 			},
 			"ssh_port": schema.Int64Attribute{
 				MarkdownDescription: "SSH port. Defaults to 22.",
@@ -232,18 +243,27 @@ resource "filesync_file" "nginx_config" {
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("root"),
+				Validators: []validator.String{
+					UnixOwner(),
+				},
 			},
 			"group": schema.StringAttribute{
 				MarkdownDescription: "File group on remote. Defaults to the SSH user's primary group.",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("root"),
+				Validators: []validator.String{
+					UnixGroup(),
+				},
 			},
 			"mode": schema.StringAttribute{
-				MarkdownDescription: "File permissions in octal notation (e.g., '0644' for rw-r--r--). Must be 4 digits. Defaults to '0644'.",
+				MarkdownDescription: "File permissions in octal notation (e.g., '0644' for rw-r--r--). Must be 3-4 digits. Defaults to '0644'.",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("0644"),
+				Validators: []validator.String{
+					OctalMode(),
+				},
 			},
 
 			// Computed.
@@ -297,29 +317,49 @@ func (r *FileResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
+	ctx = tflog.SetField(ctx, "host", data.Host.ValueString())
+	ctx = tflog.SetField(ctx, "source", data.Source.ValueString())
+	ctx = tflog.SetField(ctx, "destination", data.Destination.ValueString())
+
+	tflog.Info(ctx, "Creating file resource")
+
 	// Calculate source file hash.
 	hash, size, err := hashFile(data.Source.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read source file", err.Error())
 		return
 	}
+	tflog.Debug(ctx, "Computed source file hash", map[string]interface{}{
+		"hash": hash,
+		"size": size,
+	})
 
 	// Create SSH client.
+	tflog.Debug(ctx, "Establishing SSH connection")
 	client, err := r.createSSHClient(&data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create SSH connection", err.Error())
 		return
 	}
 	defer r.releaseSSHClient(&data, client)
+	tflog.Debug(ctx, "SSH connection established")
 
 	// Upload file.
-	if err := client.UploadFile(data.Source.ValueString(), data.Destination.ValueString()); err != nil {
+	tflog.Debug(ctx, "Uploading file")
+	if err := client.UploadFile(ctx, data.Source.ValueString(), data.Destination.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Failed to upload file", err.Error())
 		return
 	}
+	tflog.Debug(ctx, "File uploaded successfully")
 
 	// Set ownership and permissions.
+	tflog.Debug(ctx, "Setting file attributes", map[string]interface{}{
+		"owner": data.Owner.ValueString(),
+		"group": data.Group.ValueString(),
+		"mode":  data.Mode.ValueString(),
+	})
 	if err := client.SetFileAttributes(
+		ctx,
 		data.Destination.ValueString(),
 		data.Owner.ValueString(),
 		data.Group.ValueString(),
@@ -334,6 +374,11 @@ func (r *FileResource) Create(ctx context.Context, req resource.CreateRequest, r
 	data.SourceHash = types.StringValue(hash)
 	data.Size = types.Int64Value(size)
 
+	tflog.Info(ctx, "File resource created successfully", map[string]interface{}{
+		"id":   data.ID.ValueString(),
+		"size": size,
+	})
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -344,6 +389,9 @@ func (r *FileResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	ctx = tflog.SetField(ctx, "id", data.ID.ValueString())
+	tflog.Debug(ctx, "Reading file resource state")
 
 	// Read refreshes state from the resource.
 	// IMPORTANT: We do NOT update source_hash here. The source_hash represents
@@ -358,17 +406,22 @@ func (r *FileResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	// If source is not set (e.g., after import), don't remove from state.
 	// The user needs to update their config to include the source attribute.
 	if sourcePath == "" || data.Source.IsNull() || data.Source.IsUnknown() {
+		tflog.Debug(ctx, "Source path not set (possibly after import), preserving state")
 		// Preserve the current state - source will be set in next apply.
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 		return
 	}
 
 	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		tflog.Info(ctx, "Source file no longer exists, removing resource from state", map[string]interface{}{
+			"source": sourcePath,
+		})
 		// Source file was deleted - remove from state.
 		resp.State.RemoveResource(ctx)
 		return
 	}
 
+	tflog.Debug(ctx, "File resource state preserved")
 	// State is unchanged - we preserve the existing source_hash.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -383,27 +436,42 @@ func (r *FileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
+	ctx = tflog.SetField(ctx, "host", data.Host.ValueString())
+	ctx = tflog.SetField(ctx, "source", data.Source.ValueString())
+	ctx = tflog.SetField(ctx, "destination", data.Destination.ValueString())
+
+	tflog.Info(ctx, "Updating file resource")
+
 	// Calculate new source file hash.
 	newHash, size, err := hashFile(data.Source.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read source file", err.Error())
 		return
 	}
+	tflog.Debug(ctx, "Computed new source file hash", map[string]interface{}{
+		"new_hash":  newHash,
+		"old_hash":  state.SourceHash.ValueString(),
+		"size":      size,
+		"unchanged": newHash == state.SourceHash.ValueString(),
+	})
 
 	// Create SSH client.
+	tflog.Debug(ctx, "Establishing SSH connection")
 	client, err := r.createSSHClient(&data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create SSH connection", err.Error())
 		return
 	}
 	defer r.releaseSSHClient(&data, client)
+	tflog.Debug(ctx, "SSH connection established")
 
 	// Check for remote drift - compare remote hash with what we expect from state.
-	remoteHash, err := client.GetFileHash(data.Destination.ValueString())
+	tflog.Debug(ctx, "Checking for remote drift")
+	remoteHash, err := client.GetFileHash(ctx, data.Destination.ValueString())
 	if err != nil {
 		// Check if file doesn't exist (could be first create after import).
 		// We need to distinguish between "file not found" and other errors.
-		exists, existsErr := client.FileExists(data.Destination.ValueString())
+		exists, existsErr := client.FileExists(ctx, data.Destination.ValueString())
 		if existsErr != nil {
 			// Can't even check if file exists - report the connection/permission issue.
 			resp.Diagnostics.AddError(
@@ -420,8 +488,13 @@ func (r *FileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			)
 			return
 		}
+		tflog.Debug(ctx, "Remote file does not exist (first upload after import)")
 		// File doesn't exist - this is OK for first create after import, continue with upload.
 	} else if remoteHash != state.SourceHash.ValueString() {
+		tflog.Warn(ctx, "Remote file drift detected", map[string]interface{}{
+			"expected_hash": state.SourceHash.ValueString(),
+			"remote_hash":   remoteHash,
+		})
 		// Drift detected! Try to generate a content diff for better error message
 		var diffContent string
 
@@ -429,7 +502,7 @@ func (r *FileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		localContent, localErr := os.ReadFile(data.Source.ValueString())
 		if localErr == nil {
 			// Read remote file content for diff (limit to 100KB).
-			remoteContent, remoteErr := client.ReadFileContent(data.Destination.ValueString(), diff.MaxDiffSize)
+			remoteContent, remoteErr := client.ReadFileContent(ctx, data.Destination.ValueString(), diff.MaxDiffSize)
 			if remoteErr == nil {
 				diffContent = diff.GenerateUnifiedDiff(localContent, remoteContent, data.Destination.ValueString())
 			}
@@ -445,16 +518,26 @@ func (r *FileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 		resp.Diagnostics.AddError("Remote file drift detected", errorMsg)
 		return
+	} else {
+		tflog.Debug(ctx, "No remote drift detected")
 	}
 
 	// Upload file.
-	if err := client.UploadFile(data.Source.ValueString(), data.Destination.ValueString()); err != nil {
+	tflog.Debug(ctx, "Uploading file")
+	if err := client.UploadFile(ctx, data.Source.ValueString(), data.Destination.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Failed to upload file", err.Error())
 		return
 	}
+	tflog.Debug(ctx, "File uploaded successfully")
 
 	// Set ownership and permissions.
+	tflog.Debug(ctx, "Setting file attributes", map[string]interface{}{
+		"owner": data.Owner.ValueString(),
+		"group": data.Group.ValueString(),
+		"mode":  data.Mode.ValueString(),
+	})
 	if err := client.SetFileAttributes(
+		ctx,
 		data.Destination.ValueString(),
 		data.Owner.ValueString(),
 		data.Group.ValueString(),
@@ -469,6 +552,11 @@ func (r *FileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	data.SourceHash = types.StringValue(newHash)
 	data.Size = types.Int64Value(size)
 
+	tflog.Info(ctx, "File resource updated successfully", map[string]interface{}{
+		"id":   data.ID.ValueString(),
+		"size": size,
+	})
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -480,19 +568,30 @@ func (r *FileResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 
+	ctx = tflog.SetField(ctx, "host", data.Host.ValueString())
+	ctx = tflog.SetField(ctx, "destination", data.Destination.ValueString())
+	ctx = tflog.SetField(ctx, "id", data.ID.ValueString())
+
+	tflog.Info(ctx, "Deleting file resource")
+
 	// Create SSH client.
+	tflog.Debug(ctx, "Establishing SSH connection")
 	client, err := r.createSSHClient(&data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create SSH connection", err.Error())
 		return
 	}
 	defer r.releaseSSHClient(&data, client)
+	tflog.Debug(ctx, "SSH connection established")
 
 	// Delete remote file.
-	if err := client.DeleteFile(data.Destination.ValueString()); err != nil {
+	tflog.Debug(ctx, "Deleting remote file")
+	if err := client.DeleteFile(ctx, data.Destination.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Failed to delete remote file", err.Error())
 		return
 	}
+
+	tflog.Info(ctx, "File resource deleted successfully")
 }
 
 func (r *FileResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -506,6 +605,9 @@ func (r *FileResource) ImportState(ctx context.Context, req resource.ImportState
 	// Then run `terraform apply` to sync state with the config.
 
 	id := req.ID
+	tflog.Info(ctx, "Importing file resource", map[string]interface{}{
+		"import_id": id,
+	})
 
 	// Parse the import ID - format is "host:destination".
 	// The destination is an absolute path, so we split on the first ":".
@@ -544,90 +646,8 @@ func (r *FileResource) ImportState(ctx context.Context, req resource.ImportState
 // Helper functions.
 
 // getSSHConfig builds an SSH config from resource data.
-func (r *FileResource) getSSHConfig(data *FileResourceModel) ssh.Config {
-	config := ssh.Config{
-		Host: data.Host.ValueString(),
-		Port: int(data.SSHPort.ValueInt64()),
-		User: data.SSHUser.ValueString(),
-	}
-
-	// Determine SSH credentials - resource values override provider defaults.
-	// Check password authentication.
-	if !data.SSHPassword.IsNull() && data.SSHPassword.ValueString() != "" {
-		config.Password = data.SSHPassword.ValueString()
-	} else if r.providerConfig != nil && !r.providerConfig.SSHPassword.IsNull() {
-		config.Password = r.providerConfig.SSHPassword.ValueString()
-	}
-
-	// Check private key authentication.
-	if !data.SSHPrivateKey.IsNull() && data.SSHPrivateKey.ValueString() != "" {
-		config.PrivateKey = data.SSHPrivateKey.ValueString()
-	} else if !data.SSHKeyPath.IsNull() && data.SSHKeyPath.ValueString() != "" {
-		config.KeyPath = expandPath(data.SSHKeyPath.ValueString())
-	} else if r.providerConfig != nil {
-		if !r.providerConfig.SSHPrivateKey.IsNull() && r.providerConfig.SSHPrivateKey.ValueString() != "" {
-			config.PrivateKey = r.providerConfig.SSHPrivateKey.ValueString()
-		} else if !r.providerConfig.SSHKeyPath.IsNull() && r.providerConfig.SSHKeyPath.ValueString() != "" {
-			config.KeyPath = expandPath(r.providerConfig.SSHKeyPath.ValueString())
-		}
-	}
-
-	// Check certificate authentication.
-	if !data.SSHCertificate.IsNull() && data.SSHCertificate.ValueString() != "" {
-		config.Certificate = data.SSHCertificate.ValueString()
-	} else if !data.SSHCertificatePath.IsNull() && data.SSHCertificatePath.ValueString() != "" {
-		config.CertificatePath = expandPath(data.SSHCertificatePath.ValueString())
-	} else if r.providerConfig != nil {
-		if !r.providerConfig.SSHCertificate.IsNull() && r.providerConfig.SSHCertificate.ValueString() != "" {
-			config.Certificate = r.providerConfig.SSHCertificate.ValueString()
-		} else if !r.providerConfig.SSHCertificatePath.IsNull() && r.providerConfig.SSHCertificatePath.ValueString() != "" {
-			config.CertificatePath = expandPath(r.providerConfig.SSHCertificatePath.ValueString())
-		}
-	}
-
-	// Check bastion/jump host configuration.
-	if !data.BastionHost.IsNull() && data.BastionHost.ValueString() != "" {
-		config.BastionHost = data.BastionHost.ValueString()
-		if !data.BastionPort.IsNull() {
-			config.BastionPort = int(data.BastionPort.ValueInt64())
-		}
-		if !data.BastionUser.IsNull() {
-			config.BastionUser = data.BastionUser.ValueString()
-		}
-		if !data.BastionKey.IsNull() && data.BastionKey.ValueString() != "" {
-			config.BastionKey = data.BastionKey.ValueString()
-		} else if !data.BastionKeyPath.IsNull() && data.BastionKeyPath.ValueString() != "" {
-			config.BastionKeyPath = expandPath(data.BastionKeyPath.ValueString())
-		}
-		if !data.BastionPassword.IsNull() {
-			config.BastionPassword = data.BastionPassword.ValueString()
-		}
-	} else if r.providerConfig != nil && !r.providerConfig.BastionHost.IsNull() && r.providerConfig.BastionHost.ValueString() != "" {
-		config.BastionHost = r.providerConfig.BastionHost.ValueString()
-		if !r.providerConfig.BastionPort.IsNull() {
-			config.BastionPort = int(r.providerConfig.BastionPort.ValueInt64())
-		}
-		if !r.providerConfig.BastionUser.IsNull() {
-			config.BastionUser = r.providerConfig.BastionUser.ValueString()
-		}
-		if !r.providerConfig.BastionKey.IsNull() && r.providerConfig.BastionKey.ValueString() != "" {
-			config.BastionKey = r.providerConfig.BastionKey.ValueString()
-		} else if !r.providerConfig.BastionKeyPath.IsNull() && r.providerConfig.BastionKeyPath.ValueString() != "" {
-			config.BastionKeyPath = expandPath(r.providerConfig.BastionKeyPath.ValueString())
-		}
-		if !r.providerConfig.BastionPassword.IsNull() {
-			config.BastionPassword = r.providerConfig.BastionPassword.ValueString()
-		}
-	}
-
-	// Check insecure host key setting.
-	if !data.InsecureIgnoreHostKey.IsNull() && data.InsecureIgnoreHostKey.ValueBool() {
-		config.InsecureIgnoreHostKey = true
-	} else if r.providerConfig != nil && !r.providerConfig.InsecureIgnoreHostKey.IsNull() {
-		config.InsecureIgnoreHostKey = r.providerConfig.InsecureIgnoreHostKey.ValueBool()
-	}
-
-	return config
+func (r *FileResource) getSSHConfig(data *FileResourceModel) gosftp.Config {
+	return BuildSSHConfig(data, r.providerConfig)
 }
 
 // isPoolingEnabled checks if connection pooling is enabled.
@@ -638,12 +658,12 @@ func (r *FileResource) isPoolingEnabled() bool {
 }
 
 // createSSHClient creates or retrieves an SSH client (from pool if enabled).
-func (r *FileResource) createSSHClient(data *FileResourceModel) (ssh.ClientInterface, error) {
+func (r *FileResource) createSSHClient(data *FileResourceModel) (gosftp.ClientInterface, error) {
 	config := r.getSSHConfig(data)
 
 	// Use connection pool if enabled.
-	if r.isPoolingEnabled() {
-		return ssh.GetConnection(config)
+	if r.isPoolingEnabled() && r.providerConfig != nil && r.providerConfig.pool != nil {
+		return r.providerConfig.pool.GetOrCreate(config)
 	}
 
 	// Otherwise, create a new connection using the factory.
@@ -656,10 +676,10 @@ func (r *FileResource) createSSHClient(data *FileResourceModel) (ssh.ClientInter
 
 // releaseSSHClient releases a connection back to the pool (if pooling enabled).
 // If pooling is disabled, this closes the connection.
-func (r *FileResource) releaseSSHClient(data *FileResourceModel, client ssh.ClientInterface) {
-	if r.isPoolingEnabled() {
+func (r *FileResource) releaseSSHClient(data *FileResourceModel, client gosftp.ClientInterface) {
+	if r.isPoolingEnabled() && r.providerConfig != nil && r.providerConfig.pool != nil {
 		config := r.getSSHConfig(data)
-		ssh.ReleaseConnection(config)
+		r.providerConfig.pool.Release(config)
 		// Don't close - the pool manages the connection lifecycle.
 	} else {
 		// Not pooling - close the connection.
@@ -681,14 +701,6 @@ func hashFile(path string) (string, int64, error) {
 	}
 
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), size, nil
-}
-
-func expandPath(path string) string {
-	if len(path) > 0 && path[0] == '~' {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[1:])
-	}
-	return path
 }
 
 // sourceHashPlanModifier computes the source file hash during planning.

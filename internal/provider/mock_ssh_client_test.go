@@ -1,14 +1,19 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"sync"
 
-	"github.com/darshan-rambhia/terraform-provider-filesync/internal/ssh"
+	"github.com/darshan-rambhia/gosftp"
 )
 
-// MockSSHClient is a mock implementation of ssh.ClientInterface for testing.
+// MockSSHClient is a mock implementation of gosftp.ClientInterface for testing.
 type MockSSHClient struct {
+	// Synchronization.
+	mu sync.Mutex
+
 	// Configuration.
 	UploadedFiles  map[string]string // remotePath -> localPath
 	FileHashes     map[string]string // remotePath -> hash
@@ -51,33 +56,42 @@ func NewMockSSHClient() *MockSSHClient {
 	}
 }
 
-// Close implements ssh.ClientInterface.
+// Close implements gosftp.ClientInterface.
 func (m *MockSSHClient) Close() error {
 	m.CloseCalled = true
 	return nil
 }
 
-// UploadFile implements ssh.ClientInterface.
-func (m *MockSSHClient) UploadFile(localPath, remotePath string) error {
+// UploadFile implements gosftp.ClientInterface.
+func (m *MockSSHClient) UploadFile(ctx context.Context, localPath, remotePath string) error {
+	m.mu.Lock()
 	m.UploadCalls++
 	if m.UploadError != nil {
+		m.mu.Unlock()
 		return m.UploadError
 	}
 	m.UploadedFiles[remotePath] = localPath
 	m.ExistingFiles[remotePath] = true
+	m.mu.Unlock()
 
 	// Read local file content and compute hash.
 	content, err := os.ReadFile(localPath)
 	if err != nil {
 		return err
 	}
+
+	m.mu.Lock()
 	m.FileContents[remotePath] = content
+	m.mu.Unlock()
 
 	return nil
 }
 
-// GetFileHash implements ssh.ClientInterface.
-func (m *MockSSHClient) GetFileHash(remotePath string) (string, error) {
+// GetFileHash implements gosftp.ClientInterface.
+func (m *MockSSHClient) GetFileHash(ctx context.Context, remotePath string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.GetHashCalls++
 	if m.GetHashError != nil {
 		return "", m.GetHashError
@@ -89,8 +103,11 @@ func (m *MockSSHClient) GetFileHash(remotePath string) (string, error) {
 	return hash, nil
 }
 
-// SetFileAttributes implements ssh.ClientInterface.
-func (m *MockSSHClient) SetFileAttributes(remotePath, owner, group, mode string) error {
+// SetFileAttributes implements gosftp.ClientInterface.
+func (m *MockSSHClient) SetFileAttributes(ctx context.Context, remotePath, owner, group, mode string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.SetAttributeCalls++
 	if m.SetAttributeError != nil {
 		return m.SetAttributeError
@@ -103,8 +120,11 @@ func (m *MockSSHClient) SetFileAttributes(remotePath, owner, group, mode string)
 	return nil
 }
 
-// DeleteFile implements ssh.ClientInterface.
-func (m *MockSSHClient) DeleteFile(remotePath string) error {
+// DeleteFile implements gosftp.ClientInterface.
+func (m *MockSSHClient) DeleteFile(ctx context.Context, remotePath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.DeleteCalls++
 	if m.DeleteError != nil {
 		return m.DeleteError
@@ -116,16 +136,22 @@ func (m *MockSSHClient) DeleteFile(remotePath string) error {
 	return nil
 }
 
-// FileExists implements ssh.ClientInterface.
-func (m *MockSSHClient) FileExists(remotePath string) (bool, error) {
+// FileExists implements gosftp.ClientInterface.
+func (m *MockSSHClient) FileExists(ctx context.Context, remotePath string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.ExistsError != nil {
 		return false, m.ExistsError
 	}
 	return m.ExistingFiles[remotePath], nil
 }
 
-// GetFileInfo implements ssh.ClientInterface.
-func (m *MockSSHClient) GetFileInfo(remotePath string) (os.FileInfo, error) {
+// GetFileInfo implements gosftp.ClientInterface.
+func (m *MockSSHClient) GetFileInfo(ctx context.Context, remotePath string) (os.FileInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if !m.ExistingFiles[remotePath] {
 		return nil, os.ErrNotExist
 	}
@@ -133,8 +159,11 @@ func (m *MockSSHClient) GetFileInfo(remotePath string) (os.FileInfo, error) {
 	return nil, nil
 }
 
-// ReadFileContent implements ssh.ClientInterface.
-func (m *MockSSHClient) ReadFileContent(remotePath string, maxBytes int64) ([]byte, error) {
+// ReadFileContent implements gosftp.ClientInterface.
+func (m *MockSSHClient) ReadFileContent(ctx context.Context, remotePath string, maxBytes int64) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.ReadContentError != nil {
 		return nil, m.ReadContentError
 	}
@@ -148,19 +177,19 @@ func (m *MockSSHClient) ReadFileContent(remotePath string, maxBytes int64) ([]by
 	return content, nil
 }
 
-// Ensure MockSSHClient implements ssh.ClientInterface.
-var _ ssh.ClientInterface = (*MockSSHClient)(nil)
+// Ensure MockSSHClient implements gosftp.ClientInterface.
+var _ gosftp.ClientInterface = (*MockSSHClient)(nil)
 
 // MockSSHClientFactory creates a factory function that returns the given mock client.
 func MockSSHClientFactory(mock *MockSSHClient) SSHClientFactory {
-	return func(config ssh.Config) (ssh.ClientInterface, error) {
+	return func(config gosftp.Config) (gosftp.ClientInterface, error) {
 		return mock, nil
 	}
 }
 
 // MockSSHClientFactoryWithError creates a factory function that returns an error.
 func MockSSHClientFactoryWithError(err error) SSHClientFactory {
-	return func(config ssh.Config) (ssh.ClientInterface, error) {
+	return func(config gosftp.Config) (gosftp.ClientInterface, error) {
 		return nil, err
 	}
 }

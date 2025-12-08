@@ -11,7 +11,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
+	"github.com/darshan-rambhia/gosftp"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -20,9 +24,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
-	"github.com/darshan-rambhia/terraform-provider-filesync/internal/ssh"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
@@ -74,7 +78,9 @@ type DirectoryResourceModel struct {
 	Mode  types.String `tfsdk:"mode"`
 
 	// Optional - sync options.
-	Exclude types.List `tfsdk:"exclude"`
+	Exclude         types.List   `tfsdk:"exclude"`
+	ParallelUploads types.Int64  `tfsdk:"parallel_uploads"`
+	SymlinkPolicy   types.String `tfsdk:"symlink_policy"`
 
 	// Computed.
 	ID         types.String `tfsdk:"id"`
@@ -135,6 +141,9 @@ resource "filesync_directory" "configs" {
 			"destination": schema.StringAttribute{
 				MarkdownDescription: "Absolute path on the remote host where files should be placed.",
 				Required:            true,
+				Validators: []validator.String{
+					AbsolutePath(),
+				},
 			},
 			"host": schema.StringAttribute{
 				MarkdownDescription: "Remote host address (IP or hostname).",
@@ -152,10 +161,16 @@ resource "filesync_directory" "configs" {
 				MarkdownDescription: "SSH private key content. Mutually exclusive with ssh_key_path.",
 				Optional:            true,
 				Sensitive:           true,
+				Validators: []validator.String{
+					stringvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("ssh_key_path")),
+				},
 			},
 			"ssh_key_path": schema.StringAttribute{
 				MarkdownDescription: "Path to SSH private key file. Mutually exclusive with ssh_private_key.",
 				Optional:            true,
+				Validators: []validator.String{
+					stringvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("ssh_private_key")),
+				},
 			},
 			"ssh_port": schema.Int64Attribute{
 				MarkdownDescription: "SSH port. Defaults to 22.",
@@ -218,18 +233,27 @@ resource "filesync_directory" "configs" {
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("root"),
+				Validators: []validator.String{
+					UnixOwner(),
+				},
 			},
 			"group": schema.StringAttribute{
 				MarkdownDescription: "File group on remote. Defaults to the SSH user's primary group.",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("root"),
+				Validators: []validator.String{
+					UnixGroup(),
+				},
 			},
 			"mode": schema.StringAttribute{
-				MarkdownDescription: "File permissions in octal notation (e.g., '0644' for rw-r--r--) applied to all files. Must be 4 digits. Defaults to '0644'.",
+				MarkdownDescription: "File permissions in octal notation (e.g., '0644' for rw-r--r--) applied to all files. Must be 3-4 digits. Defaults to '0644'.",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("0644"),
+				Validators: []validator.String{
+					OctalMode(),
+				},
 			},
 
 			// Optional - sync options.
@@ -237,6 +261,24 @@ resource "filesync_directory" "configs" {
 				MarkdownDescription: "List of glob patterns to exclude from sync (e.g., `*.tmp`, `.git`, `.DS_Store`). Supports standard glob syntax with `*` and `?` wildcards.",
 				Optional:            true,
 				ElementType:         types.StringType,
+			},
+			"parallel_uploads": schema.Int64Attribute{
+				MarkdownDescription: "Number of files to upload in parallel. Set to 1 for sequential uploads. Higher values improve performance but use more connections. Defaults to 4.",
+				Optional:            true,
+				Computed:            true,
+				Default:             int64default.StaticInt64(4),
+				Validators: []validator.Int64{
+					int64validator.Between(1, 32),
+				},
+			},
+			"symlink_policy": schema.StringAttribute{
+				MarkdownDescription: "How to handle symbolic links. Options: `follow` (default) - follow symlinks and copy target content; `skip` - ignore symlinks; `preserve` - create symlinks on remote (requires remote support).",
+				Optional:            true,
+				Computed:            true,
+				Default:             stringdefault.StaticString("follow"),
+				Validators: []validator.String{
+					stringvalidator.OneOf("follow", "skip", "preserve"),
+				},
 			},
 
 			// Computed.
@@ -305,6 +347,12 @@ func (r *DirectoryResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
+	ctx = tflog.SetField(ctx, "host", data.Host.ValueString())
+	ctx = tflog.SetField(ctx, "source", data.Source.ValueString())
+	ctx = tflog.SetField(ctx, "destination", data.Destination.ValueString())
+
+	tflog.Info(ctx, "Creating directory resource")
+
 	// Get exclude patterns.
 	excludePatterns := r.getExcludePatterns(ctx, &data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
@@ -312,53 +360,73 @@ func (r *DirectoryResource) Create(ctx context.Context, req resource.CreateReque
 	}
 
 	// Scan local directory.
-	files, err := scanDirectory(data.Source.ValueString(), excludePatterns)
+	symlinkPolicy := data.SymlinkPolicy.ValueString()
+	tflog.Debug(ctx, "Scanning source directory", map[string]interface{}{
+		"exclude_patterns": excludePatterns,
+		"symlink_policy":   symlinkPolicy,
+	})
+	files, err := scanDirectory(data.Source.ValueString(), excludePatterns, symlinkPolicy)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to scan source directory", err.Error())
 		return
 	}
+	tflog.Debug(ctx, "Source directory scanned", map[string]interface{}{
+		"file_count": len(files),
+	})
 
 	// Create SSH client.
+	tflog.Debug(ctx, "Establishing SSH connection")
 	client, err := r.createSSHClient(&data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create SSH connection", err.Error())
 		return
 	}
-	defer client.Close()
+	defer r.releaseSSHClient(&data, client)
+	tflog.Debug(ctx, "SSH connection established")
 
-	// Upload all files.
+	// Prepare upload jobs.
+	parallelism := int(data.ParallelUploads.ValueInt64())
+	jobs := make([]uploadJob, 0, len(files))
+	for _, file := range files {
+		jobs = append(jobs, uploadJob{
+			file:       file,
+			localPath:  filepath.Join(data.Source.ValueString(), file.RelPath),
+			remotePath: filepath.Join(data.Destination.ValueString(), file.RelPath),
+			owner:      data.Owner.ValueString(),
+			group:      data.Group.ValueString(),
+			mode:       data.Mode.ValueString(),
+		})
+	}
+
+	tflog.Debug(ctx, "Starting parallel file uploads", map[string]interface{}{
+		"total_files": len(files),
+		"parallelism": parallelism,
+	})
+
+	// Upload all files in parallel.
+	results := parallelUpload(ctx, client, jobs, parallelism)
+
+	// Process results.
 	fileHashes := make(map[string]string)
 	var totalSize int64
+	var uploadErrors []string
 
-	for _, file := range files {
-		localPath := filepath.Join(data.Source.ValueString(), file.RelPath)
-		remotePath := filepath.Join(data.Destination.ValueString(), file.RelPath)
-
-		// Upload file.
-		if err := client.UploadFile(localPath, remotePath); err != nil {
-			resp.Diagnostics.AddError(
-				"Failed to upload file",
-				fmt.Sprintf("File: %s, Error: %s", file.RelPath, err.Error()),
-			)
-			return
+	for _, result := range results {
+		if result.err != nil {
+			uploadErrors = append(uploadErrors, fmt.Sprintf("%s: %s", result.relPath, result.err.Error()))
+		} else {
+			fileHashes[result.relPath] = result.hash
+			totalSize += result.size
 		}
+	}
 
-		// Set ownership and permissions.
-		if err := client.SetFileAttributes(
-			remotePath,
-			data.Owner.ValueString(),
-			data.Group.ValueString(),
-			data.Mode.ValueString(),
-		); err != nil {
-			resp.Diagnostics.AddError(
-				"Failed to set file attributes",
-				fmt.Sprintf("File: %s, Error: %s", file.RelPath, err.Error()),
-			)
-			return
-		}
-
-		fileHashes[file.RelPath] = file.Hash
-		totalSize += file.Size
+	// Report any errors.
+	if len(uploadErrors) > 0 {
+		resp.Diagnostics.AddError(
+			"Failed to upload files",
+			fmt.Sprintf("The following files failed to upload:\n%s", strings.Join(uploadErrors, "\n")),
+		)
+		return
 	}
 
 	// Calculate combined hash.
@@ -378,6 +446,12 @@ func (r *DirectoryResource) Create(ctx context.Context, req resource.CreateReque
 	data.TotalSize = types.Int64Value(totalSize)
 	data.FileHashes = fileHashesMap
 
+	tflog.Info(ctx, "Directory resource created successfully", map[string]interface{}{
+		"id":         data.ID.ValueString(),
+		"file_count": len(files),
+		"total_size": totalSize,
+	})
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -389,18 +463,25 @@ func (r *DirectoryResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
+	ctx = tflog.SetField(ctx, "id", data.ID.ValueString())
+	tflog.Debug(ctx, "Reading directory resource state")
+
 	// Check if source directory still exists.
 	sourcePath := data.Source.ValueString()
 
 	// If source is not set (e.g., after import), don't remove from state.
 	// The user needs to update their config to include the source attribute.
 	if sourcePath == "" || data.Source.IsNull() || data.Source.IsUnknown() {
+		tflog.Debug(ctx, "Source path not set (possibly after import), preserving state")
 		// Preserve the current state - source will be set in next apply.
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 		return
 	}
 
 	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		tflog.Info(ctx, "Source directory no longer exists, removing resource from state", map[string]interface{}{
+			"source": sourcePath,
+		})
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -412,6 +493,7 @@ func (r *DirectoryResource) Read(ctx context.Context, req resource.ReadRequest, 
 	// The plan modifiers on these attributes compute the current local values
 	// and trigger an update when they differ from the stored state.
 
+	tflog.Debug(ctx, "Directory resource state preserved")
 	// State is unchanged - we preserve the existing computed values.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -426,6 +508,12 @@ func (r *DirectoryResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
+	ctx = tflog.SetField(ctx, "host", data.Host.ValueString())
+	ctx = tflog.SetField(ctx, "source", data.Source.ValueString())
+	ctx = tflog.SetField(ctx, "destination", data.Destination.ValueString())
+
+	tflog.Info(ctx, "Updating directory resource")
+
 	// Get exclude patterns.
 	excludePatterns := r.getExcludePatterns(ctx, &data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
@@ -433,11 +521,18 @@ func (r *DirectoryResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	// Scan local directory.
-	files, err := scanDirectory(data.Source.ValueString(), excludePatterns)
+	symlinkPolicy := data.SymlinkPolicy.ValueString()
+	tflog.Debug(ctx, "Scanning source directory", map[string]interface{}{
+		"symlink_policy": symlinkPolicy,
+	})
+	files, err := scanDirectory(data.Source.ValueString(), excludePatterns, symlinkPolicy)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to scan source directory", err.Error())
 		return
 	}
+	tflog.Debug(ctx, "Source directory scanned", map[string]interface{}{
+		"file_count": len(files),
+	})
 
 	// Get previous file hashes from state.
 	var stateHashes map[string]string
@@ -447,12 +542,14 @@ func (r *DirectoryResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	// Create SSH client.
+	tflog.Debug(ctx, "Establishing SSH connection")
 	client, err := r.createSSHClient(&data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create SSH connection", err.Error())
 		return
 	}
-	defer client.Close()
+	defer r.releaseSSHClient(&data, client)
+	tflog.Debug(ctx, "SSH connection established")
 
 	// Check if mode/owner/group changed - if so, we need to update all files.
 	modeChanged := data.Mode.ValueString() != state.Mode.ValueString()
@@ -460,14 +557,22 @@ func (r *DirectoryResource) Update(ctx context.Context, req resource.UpdateReque
 	groupChanged := data.Group.ValueString() != state.Group.ValueString()
 	attributesChanged := modeChanged || ownerChanged || groupChanged
 
-	// Upload changed files.
+	if attributesChanged {
+		tflog.Debug(ctx, "File attributes changed, will update all files", map[string]interface{}{
+			"mode_changed":  modeChanged,
+			"owner_changed": ownerChanged,
+			"group_changed": groupChanged,
+		})
+	}
+
+	// Categorize files: unchanged (skip), need upload, or need attribute update only.
 	newFileHashes := make(map[string]string)
 	currentFiles := make(map[string]bool)
 	var totalSize int64
+	var skippedCount int
+	var jobs []uploadJob
 
 	for _, file := range files {
-		localPath := filepath.Join(data.Source.ValueString(), file.RelPath)
-		remotePath := filepath.Join(data.Destination.ValueString(), file.RelPath)
 		currentFiles[file.RelPath] = true
 
 		// Check if file changed.
@@ -478,47 +583,70 @@ func (r *DirectoryResource) Update(ctx context.Context, req resource.UpdateReque
 			// File and attributes unchanged, skip entirely.
 			newFileHashes[file.RelPath] = file.Hash
 			totalSize += file.Size
+			skippedCount++
 			continue
 		}
 
-		if !fileUnchanged {
-			// Upload file if content changed.
-			if err := client.UploadFile(localPath, remotePath); err != nil {
-				resp.Diagnostics.AddError(
-					"Failed to upload file",
-					fmt.Sprintf("File: %s, Error: %s", file.RelPath, err.Error()),
-				)
-				return
+		// File needs upload or attribute update.
+		jobs = append(jobs, uploadJob{
+			file:       file,
+			localPath:  filepath.Join(data.Source.ValueString(), file.RelPath),
+			remotePath: filepath.Join(data.Destination.ValueString(), file.RelPath),
+			owner:      data.Owner.ValueString(),
+			group:      data.Group.ValueString(),
+			mode:       data.Mode.ValueString(),
+		})
+	}
+
+	// Upload changed files in parallel.
+	parallelism := int(data.ParallelUploads.ValueInt64())
+	tflog.Debug(ctx, "Starting parallel file uploads", map[string]interface{}{
+		"files_to_upload": len(jobs),
+		"files_skipped":   skippedCount,
+		"parallelism":     parallelism,
+	})
+
+	var uploadedCount int
+	var uploadErrors []string
+
+	if len(jobs) > 0 {
+		results := parallelUpload(ctx, client, jobs, parallelism)
+
+		for _, result := range results {
+			if result.err != nil {
+				uploadErrors = append(uploadErrors, fmt.Sprintf("%s: %s", result.relPath, result.err.Error()))
+			} else {
+				newFileHashes[result.relPath] = result.hash
+				totalSize += result.size
+				uploadedCount++
 			}
 		}
 
-		// Set ownership and permissions (always if file was uploaded or attributes changed).
-		if err := client.SetFileAttributes(
-			remotePath,
-			data.Owner.ValueString(),
-			data.Group.ValueString(),
-			data.Mode.ValueString(),
-		); err != nil {
+		// Report any errors.
+		if len(uploadErrors) > 0 {
 			resp.Diagnostics.AddError(
-				"Failed to set file attributes",
-				fmt.Sprintf("File: %s, Error: %s", file.RelPath, err.Error()),
+				"Failed to upload files",
+				fmt.Sprintf("The following files failed to upload:\n%s", strings.Join(uploadErrors, "\n")),
 			)
 			return
 		}
-
-		newFileHashes[file.RelPath] = file.Hash
-		totalSize += file.Size
 	}
 
 	// Delete files that no longer exist locally.
+	var deletedCount int
 	for relPath := range stateHashes {
 		if !currentFiles[relPath] {
+			tflog.Debug(ctx, "Deleting removed file", map[string]interface{}{
+				"file": relPath,
+			})
 			remotePath := filepath.Join(data.Destination.ValueString(), relPath)
-			if err := client.DeleteFile(remotePath); err != nil {
+			if err := client.DeleteFile(ctx, remotePath); err != nil {
 				resp.Diagnostics.AddWarning(
 					"Failed to delete removed file",
 					fmt.Sprintf("File: %s, Error: %s", relPath, err.Error()),
 				)
+			} else {
+				deletedCount++
 			}
 		}
 	}
@@ -540,6 +668,15 @@ func (r *DirectoryResource) Update(ctx context.Context, req resource.UpdateReque
 	data.TotalSize = types.Int64Value(totalSize)
 	data.FileHashes = fileHashesMap
 
+	tflog.Info(ctx, "Directory resource updated successfully", map[string]interface{}{
+		"id":             data.ID.ValueString(),
+		"files_uploaded": uploadedCount,
+		"files_skipped":  skippedCount,
+		"files_deleted":  deletedCount,
+		"total_files":    len(files),
+		"total_size":     totalSize,
+	})
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -551,6 +688,12 @@ func (r *DirectoryResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
+	ctx = tflog.SetField(ctx, "host", data.Host.ValueString())
+	ctx = tflog.SetField(ctx, "destination", data.Destination.ValueString())
+	ctx = tflog.SetField(ctx, "id", data.ID.ValueString())
+
+	tflog.Info(ctx, "Deleting directory resource")
+
 	// Get file hashes from state to know what to delete.
 	var fileHashes map[string]string
 	resp.Diagnostics.Append(data.FileHashes.ElementsAs(ctx, &fileHashes, false)...)
@@ -558,28 +701,43 @@ func (r *DirectoryResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
+	tflog.Debug(ctx, "Files to delete", map[string]interface{}{
+		"file_count": len(fileHashes),
+	})
+
 	// Create SSH client.
+	tflog.Debug(ctx, "Establishing SSH connection")
 	client, err := r.createSSHClient(&data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create SSH connection", err.Error())
 		return
 	}
-	defer client.Close()
+	defer r.releaseSSHClient(&data, client)
+	tflog.Debug(ctx, "SSH connection established")
 
 	// Delete all synced files.
+	var deletedCount, failedCount int
 	for relPath := range fileHashes {
 		remotePath := filepath.Join(data.Destination.ValueString(), relPath)
-		if err := client.DeleteFile(remotePath); err != nil {
+		if err := client.DeleteFile(ctx, remotePath); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Failed to delete file",
 				fmt.Sprintf("File: %s, Error: %s", relPath, err.Error()),
 			)
+			failedCount++
+		} else {
+			deletedCount++
 		}
 	}
 
 	// Try to remove empty destination directory.
 	// Note: This only removes the directory if it's empty.
-	_ = client.DeleteFile(data.Destination.ValueString())
+	_ = client.DeleteFile(ctx, data.Destination.ValueString())
+
+	tflog.Info(ctx, "Directory resource deleted", map[string]interface{}{
+		"files_deleted": deletedCount,
+		"files_failed":  failedCount,
+	})
 }
 
 func (r *DirectoryResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -593,6 +751,9 @@ func (r *DirectoryResource) ImportState(ctx context.Context, req resource.Import
 	// Then run `terraform apply` to sync state with the config.
 
 	id := req.ID
+	tflog.Info(ctx, "Importing directory resource", map[string]interface{}{
+		"import_id": id,
+	})
 
 	// Parse the import ID - format is "host:destination".
 	// The destination is an absolute path, so we split on the first ":".
@@ -641,88 +802,20 @@ func (r *DirectoryResource) getExcludePatterns(ctx context.Context, data *Direct
 	return patterns
 }
 
-func (r *DirectoryResource) createSSHClient(data *DirectoryResourceModel) (ssh.ClientInterface, error) {
-	config := ssh.Config{
-		Host: data.Host.ValueString(),
-		Port: int(data.SSHPort.ValueInt64()),
-		User: data.SSHUser.ValueString(),
-	}
+// isPoolingEnabled checks if connection pooling is enabled.
+func (r *DirectoryResource) isPoolingEnabled() bool {
+	return r.providerConfig != nil &&
+		!r.providerConfig.ConnectionPoolEnabled.IsNull() &&
+		r.providerConfig.ConnectionPoolEnabled.ValueBool()
+}
 
-	// Determine SSH credentials - resource values override provider defaults.
-	// Check password authentication.
-	if !data.SSHPassword.IsNull() && data.SSHPassword.ValueString() != "" {
-		config.Password = data.SSHPassword.ValueString()
-	} else if r.providerConfig != nil && !r.providerConfig.SSHPassword.IsNull() {
-		config.Password = r.providerConfig.SSHPassword.ValueString()
-	}
+// createSSHClient creates or retrieves an SSH client (from pool if enabled).
+func (r *DirectoryResource) createSSHClient(data *DirectoryResourceModel) (gosftp.ClientInterface, error) {
+	config := BuildSSHConfig(data, r.providerConfig)
 
-	// Check private key authentication.
-	if !data.SSHPrivateKey.IsNull() && data.SSHPrivateKey.ValueString() != "" {
-		config.PrivateKey = data.SSHPrivateKey.ValueString()
-	} else if !data.SSHKeyPath.IsNull() && data.SSHKeyPath.ValueString() != "" {
-		config.KeyPath = expandPath(data.SSHKeyPath.ValueString())
-	} else if r.providerConfig != nil {
-		if !r.providerConfig.SSHPrivateKey.IsNull() && r.providerConfig.SSHPrivateKey.ValueString() != "" {
-			config.PrivateKey = r.providerConfig.SSHPrivateKey.ValueString()
-		} else if !r.providerConfig.SSHKeyPath.IsNull() && r.providerConfig.SSHKeyPath.ValueString() != "" {
-			config.KeyPath = expandPath(r.providerConfig.SSHKeyPath.ValueString())
-		}
-	}
-
-	// Check certificate authentication.
-	if !data.SSHCertificate.IsNull() && data.SSHCertificate.ValueString() != "" {
-		config.Certificate = data.SSHCertificate.ValueString()
-	} else if !data.SSHCertificatePath.IsNull() && data.SSHCertificatePath.ValueString() != "" {
-		config.CertificatePath = expandPath(data.SSHCertificatePath.ValueString())
-	} else if r.providerConfig != nil {
-		if !r.providerConfig.SSHCertificate.IsNull() && r.providerConfig.SSHCertificate.ValueString() != "" {
-			config.Certificate = r.providerConfig.SSHCertificate.ValueString()
-		} else if !r.providerConfig.SSHCertificatePath.IsNull() && r.providerConfig.SSHCertificatePath.ValueString() != "" {
-			config.CertificatePath = expandPath(r.providerConfig.SSHCertificatePath.ValueString())
-		}
-	}
-
-	// Check bastion/jump host configuration.
-	if !data.BastionHost.IsNull() && data.BastionHost.ValueString() != "" {
-		config.BastionHost = data.BastionHost.ValueString()
-		if !data.BastionPort.IsNull() {
-			config.BastionPort = int(data.BastionPort.ValueInt64())
-		}
-		if !data.BastionUser.IsNull() && data.BastionUser.ValueString() != "" {
-			config.BastionUser = data.BastionUser.ValueString()
-		}
-		if !data.BastionKey.IsNull() && data.BastionKey.ValueString() != "" {
-			config.BastionKey = data.BastionKey.ValueString()
-		} else if !data.BastionKeyPath.IsNull() && data.BastionKeyPath.ValueString() != "" {
-			config.BastionKeyPath = expandPath(data.BastionKeyPath.ValueString())
-		}
-		if !data.BastionPassword.IsNull() && data.BastionPassword.ValueString() != "" {
-			config.BastionPassword = data.BastionPassword.ValueString()
-		}
-	} else if r.providerConfig != nil && !r.providerConfig.BastionHost.IsNull() && r.providerConfig.BastionHost.ValueString() != "" {
-		// Fall back to provider config for bastion.
-		config.BastionHost = r.providerConfig.BastionHost.ValueString()
-		if !r.providerConfig.BastionPort.IsNull() {
-			config.BastionPort = int(r.providerConfig.BastionPort.ValueInt64())
-		}
-		if !r.providerConfig.BastionUser.IsNull() && r.providerConfig.BastionUser.ValueString() != "" {
-			config.BastionUser = r.providerConfig.BastionUser.ValueString()
-		}
-		if !r.providerConfig.BastionKey.IsNull() && r.providerConfig.BastionKey.ValueString() != "" {
-			config.BastionKey = r.providerConfig.BastionKey.ValueString()
-		} else if !r.providerConfig.BastionKeyPath.IsNull() && r.providerConfig.BastionKeyPath.ValueString() != "" {
-			config.BastionKeyPath = expandPath(r.providerConfig.BastionKeyPath.ValueString())
-		}
-		if !r.providerConfig.BastionPassword.IsNull() && r.providerConfig.BastionPassword.ValueString() != "" {
-			config.BastionPassword = r.providerConfig.BastionPassword.ValueString()
-		}
-	}
-
-	// Check insecure host key setting.
-	if !data.InsecureIgnoreHostKey.IsNull() && data.InsecureIgnoreHostKey.ValueBool() {
-		config.InsecureIgnoreHostKey = true
-	} else if r.providerConfig != nil && !r.providerConfig.InsecureIgnoreHostKey.IsNull() {
-		config.InsecureIgnoreHostKey = r.providerConfig.InsecureIgnoreHostKey.ValueBool()
+	// Use connection pool if enabled.
+	if r.isPoolingEnabled() && r.providerConfig != nil && r.providerConfig.pool != nil {
+		return r.providerConfig.pool.GetOrCreate(config)
 	}
 
 	factory := r.sshClientFactory
@@ -732,15 +825,126 @@ func (r *DirectoryResource) createSSHClient(data *DirectoryResourceModel) (ssh.C
 	return factory(config)
 }
 
+// releaseSSHClient releases a connection back to the pool (if pooling enabled).
+// If pooling is disabled, this closes the connection.
+func (r *DirectoryResource) releaseSSHClient(data *DirectoryResourceModel, client gosftp.ClientInterface) {
+	if r.isPoolingEnabled() && r.providerConfig != nil && r.providerConfig.pool != nil {
+		config := BuildSSHConfig(data, r.providerConfig)
+		r.providerConfig.pool.Release(config)
+		// Don't close - the pool manages the connection lifecycle.
+	} else {
+		// Not pooling - close the connection.
+		client.Close()
+	}
+}
+
+// uploadJob represents a file upload job for the worker pool.
+type uploadJob struct {
+	file       FileInfo
+	localPath  string
+	remotePath string
+	owner      string
+	group      string
+	mode       string
+}
+
+// uploadResult represents the result of an upload job.
+type uploadResult struct {
+	relPath string
+	hash    string
+	size    int64
+	err     error
+}
+
+// parallelUpload uploads files in parallel using a worker pool.
+func parallelUpload(
+	ctx context.Context,
+	client gosftp.ClientInterface,
+	jobs []uploadJob,
+	parallelism int,
+) []uploadResult {
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	if parallelism > len(jobs) {
+		parallelism = len(jobs)
+	}
+
+	jobChan := make(chan uploadJob, len(jobs))
+	resultChan := make(chan uploadResult, len(jobs))
+
+	// Start workers.
+	var wg sync.WaitGroup
+	for i := 0; i < parallelism; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobChan {
+				result := uploadResult{
+					relPath: job.file.RelPath,
+					hash:    job.file.Hash,
+					size:    job.file.Size,
+				}
+
+				// Check for context cancellation.
+				if ctx.Err() != nil {
+					result.err = ctx.Err()
+					resultChan <- result
+					continue
+				}
+
+				// Upload file.
+				if err := client.UploadFile(ctx, job.localPath, job.remotePath); err != nil {
+					result.err = fmt.Errorf("upload failed: %w", err)
+					resultChan <- result
+					continue
+				}
+
+				// Set file attributes.
+				if err := client.SetFileAttributes(ctx, job.remotePath, job.owner, job.group, job.mode); err != nil {
+					result.err = fmt.Errorf("set attributes failed: %w", err)
+					resultChan <- result
+					continue
+				}
+
+				resultChan <- result
+			}
+		}()
+	}
+
+	// Send all jobs.
+	for _, job := range jobs {
+		jobChan <- job
+	}
+	close(jobChan)
+
+	// Wait for all workers to finish.
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results.
+	results := make([]uploadResult, 0, len(jobs))
+	for result := range resultChan {
+		results = append(results, result)
+	}
+
+	return results
+}
+
 // FileInfo holds information about a file in the source directory.
 type FileInfo struct {
-	RelPath string
-	Hash    string
-	Size    int64
+	RelPath       string
+	Hash          string
+	Size          int64
+	IsSymlink     bool
+	SymlinkTarget string // Only set if IsSymlink is true
 }
 
 // scanDirectory walks a directory and returns information about all files.
-func scanDirectory(root string, excludePatterns []string) ([]FileInfo, error) {
+// symlinkPolicy can be: "follow" (dereference), "skip" (ignore), or "preserve" (keep as symlinks).
+func scanDirectory(root string, excludePatterns []string, symlinkPolicy string) ([]FileInfo, error) {
 	var files []FileInfo
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -764,7 +968,44 @@ func scanDirectory(root string, excludePatterns []string) ([]FileInfo, error) {
 			return nil
 		}
 
-		// Calculate hash.
+		// Check if this is a symlink.
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("failed to get info for %s: %w", relPath, err)
+		}
+
+		isSymlink := info.Mode()&os.ModeSymlink != 0
+
+		if isSymlink {
+			switch symlinkPolicy {
+			case "skip":
+				// Skip symlinks entirely.
+				return nil
+			case "preserve":
+				// Get the symlink target.
+				target, err := os.Readlink(path)
+				if err != nil {
+					return fmt.Errorf("failed to read symlink %s: %w", relPath, err)
+				}
+
+				// For preserve mode, we don't hash the content - we store the target.
+				// Use a hash of the target path for change detection.
+				targetHash := fmt.Sprintf("symlink:%s", target)
+
+				files = append(files, FileInfo{
+					RelPath:       relPath,
+					Hash:          targetHash,
+					Size:          0,
+					IsSymlink:     true,
+					SymlinkTarget: target,
+				})
+				return nil
+			default:
+				// "follow" - continue below to hash the actual content.
+			}
+		}
+
+		// Calculate hash of actual file content (follows symlinks automatically).
 		hash, size, err := hashFile(path)
 		if err != nil {
 			return fmt.Errorf("failed to hash %s: %w", relPath, err)
@@ -848,8 +1089,18 @@ func scanDirectoryForPlan(ctx context.Context, req interface {
 		}
 	}
 
+	// Get symlink policy from plan.
+	var symlinkPolicy types.String
+	if diags := req.GetAttribute(ctx, path.Root("symlink_policy"), &symlinkPolicy); diags.HasError() {
+		return "", 0, 0, nil, fmt.Errorf("symlink policy not available")
+	}
+	policy := "follow" // Default.
+	if !symlinkPolicy.IsNull() && !symlinkPolicy.IsUnknown() {
+		policy = symlinkPolicy.ValueString()
+	}
+
 	// Scan the directory.
-	files, err := scanDirectory(sourcePath.ValueString(), excludePatterns)
+	files, err := scanDirectory(sourcePath.ValueString(), excludePatterns, policy)
 	if err != nil {
 		return "", 0, 0, nil, err
 	}

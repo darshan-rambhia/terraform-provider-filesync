@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,18 +28,26 @@ var (
 )
 
 // Global container pool - initialized lazily.
-var pool *ContainerPool
+var (
+	pool     *ContainerPool
+	poolMu   sync.Mutex
+	poolOnce sync.Once
+)
 
 // GetPool returns the global container pool, creating it if necessary.
 func GetPool() *ContainerPool {
-	if pool == nil {
+	poolOnce.Do(func() {
+		poolMu.Lock()
 		pool = NewContainerPool(*parallelContainers)
-	}
+		poolMu.Unlock()
+	})
 	return pool
 }
 
 // ClosePool closes the global container pool.
 func ClosePool() {
+	poolMu.Lock()
+	defer poolMu.Unlock()
 	if pool != nil {
 		pool.Close()
 		pool = nil

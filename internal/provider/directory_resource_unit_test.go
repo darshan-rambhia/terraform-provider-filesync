@@ -546,6 +546,8 @@ func buildDirectoryTerraformValue(t *testing.T, s schema.Schema, data DirectoryR
 			"group":                    tftypes.NewValue(tftypes.String, strVal(data.Group)),
 			"mode":                     tftypes.NewValue(tftypes.String, strVal(data.Mode)),
 			"exclude":                  tftypes.NewValue(tftypes.List{ElementType: tftypes.String}, excludeVal),
+			"parallel_uploads":         tftypes.NewValue(tftypes.Number, int64Val(data.ParallelUploads)),
+			"symlink_policy":           tftypes.NewValue(tftypes.String, strVal(data.SymlinkPolicy)),
 			"id":                       tftypes.NewValue(tftypes.String, strVal(data.ID)),
 			"source_hash":              tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
 			"file_count":               tftypes.NewValue(tftypes.Number, int64Val(data.FileCount)),
@@ -582,15 +584,17 @@ func TestDirectoryResource_Create_Success(t *testing.T) {
 	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	plan := tfsdk.Plan{
@@ -635,15 +639,17 @@ func TestDirectoryResource_Create_SourceNotFound(t *testing.T) {
 	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue("/nonexistent/source"),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue("/nonexistent/source"),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	plan := tfsdk.Plan{
@@ -689,15 +695,17 @@ func TestDirectoryResource_Create_SSHConnectionError(t *testing.T) {
 	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	plan := tfsdk.Plan{
@@ -745,15 +753,17 @@ func TestDirectoryResource_Create_UploadError(t *testing.T) {
 	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	plan := tfsdk.Plan{
@@ -801,15 +811,17 @@ func TestDirectoryResource_Create_SetAttributesError(t *testing.T) {
 	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	plan := tfsdk.Plan{
@@ -858,20 +870,22 @@ func TestDirectoryResource_Read_Success(t *testing.T) {
 	})
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		ID:          types.StringValue("192.168.1.100:/remote/dir"),
-		SourceHash:  types.StringValue("sha256:old"),
-		FileCount:   types.Int64Value(1),
-		TotalSize:   types.Int64Value(100),
-		FileHashes:  fileHashes,
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		ID:              types.StringValue("192.168.1.100:/remote/dir"),
+		SourceHash:      types.StringValue("sha256:old"),
+		FileCount:       types.Int64Value(1),
+		TotalSize:       types.Int64Value(100),
+		FileHashes:      fileHashes,
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	state := tfsdk.State{
@@ -902,20 +916,22 @@ func TestDirectoryResource_Read_SourceNotFound(t *testing.T) {
 	fileHashes, _ := types.MapValueFrom(context.Background(), types.StringType, map[string]string{})
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue("/nonexistent/source"),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		ID:          types.StringValue("192.168.1.100:/remote/dir"),
-		SourceHash:  types.StringValue("sha256:old"),
-		FileCount:   types.Int64Value(0),
-		TotalSize:   types.Int64Value(0),
-		FileHashes:  fileHashes,
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue("/nonexistent/source"),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		ID:              types.StringValue("192.168.1.100:/remote/dir"),
+		SourceHash:      types.StringValue("sha256:old"),
+		FileCount:       types.Int64Value(0),
+		TotalSize:       types.Int64Value(0),
+		FileHashes:      fileHashes,
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	state := tfsdk.State{
@@ -968,32 +984,36 @@ func TestDirectoryResource_Update_Success(t *testing.T) {
 	})
 
 	stateData := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		ID:          types.StringValue("192.168.1.100:/remote/dir"),
-		SourceHash:  types.StringValue("sha256:oldcombined"),
-		FileCount:   types.Int64Value(3),
-		TotalSize:   types.Int64Value(200),
-		FileHashes:  stateHashes,
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		ID:              types.StringValue("192.168.1.100:/remote/dir"),
+		SourceHash:      types.StringValue("sha256:oldcombined"),
+		FileCount:       types.Int64Value(3),
+		TotalSize:       types.Int64Value(200),
+		FileHashes:      stateHashes,
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	planData := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	state := tfsdk.State{
@@ -1053,32 +1073,36 @@ func TestDirectoryResource_Update_SSHConnectionError(t *testing.T) {
 	})
 
 	stateData := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		ID:          types.StringValue("192.168.1.100:/remote/dir"),
-		SourceHash:  types.StringValue("sha256:old"),
-		FileCount:   types.Int64Value(1),
-		TotalSize:   types.Int64Value(100),
-		FileHashes:  stateHashes,
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		ID:              types.StringValue("192.168.1.100:/remote/dir"),
+		SourceHash:      types.StringValue("sha256:old"),
+		FileCount:       types.Int64Value(1),
+		TotalSize:       types.Int64Value(100),
+		FileHashes:      stateHashes,
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	planData := DirectoryResourceModel{
-		Source:      types.StringValue(sourceDir),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue(sourceDir),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	state := tfsdk.State{
@@ -1121,20 +1145,22 @@ func TestDirectoryResource_Delete_Success(t *testing.T) {
 	})
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue("/source/dir"),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		ID:          types.StringValue("192.168.1.100:/remote/dir"),
-		SourceHash:  types.StringValue("sha256:combined"),
-		FileCount:   types.Int64Value(2),
-		TotalSize:   types.Int64Value(200),
-		FileHashes:  fileHashes,
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue("/source/dir"),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		ID:              types.StringValue("192.168.1.100:/remote/dir"),
+		SourceHash:      types.StringValue("sha256:combined"),
+		FileCount:       types.Int64Value(2),
+		TotalSize:       types.Int64Value(200),
+		FileHashes:      fileHashes,
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	state := tfsdk.State{
@@ -1172,20 +1198,22 @@ func TestDirectoryResource_Delete_SSHConnectionError(t *testing.T) {
 	})
 
 	data := DirectoryResourceModel{
-		Source:      types.StringValue("/source/dir"),
-		Destination: types.StringValue("/remote/dir"),
-		Host:        types.StringValue("192.168.1.100"),
-		SSHUser:     types.StringValue("root"),
-		SSHPort:     types.Int64Value(22),
-		Owner:       types.StringValue("root"),
-		Group:       types.StringValue("root"),
-		Mode:        types.StringValue("0644"),
-		ID:          types.StringValue("192.168.1.100:/remote/dir"),
-		SourceHash:  types.StringValue("sha256:combined"),
-		FileCount:   types.Int64Value(1),
-		TotalSize:   types.Int64Value(100),
-		FileHashes:  fileHashes,
-		Exclude:     types.ListNull(types.StringType),
+		Source:          types.StringValue("/source/dir"),
+		Destination:     types.StringValue("/remote/dir"),
+		Host:            types.StringValue("192.168.1.100"),
+		SSHUser:         types.StringValue("root"),
+		SSHPort:         types.Int64Value(22),
+		Owner:           types.StringValue("root"),
+		Group:           types.StringValue("root"),
+		Mode:            types.StringValue("0644"),
+		ID:              types.StringValue("192.168.1.100:/remote/dir"),
+		SourceHash:      types.StringValue("sha256:combined"),
+		FileCount:       types.Int64Value(1),
+		TotalSize:       types.Int64Value(100),
+		FileHashes:      fileHashes,
+		Exclude:         types.ListNull(types.StringType),
+		ParallelUploads: types.Int64Value(4),
+		SymlinkPolicy:   types.StringValue("follow"),
 	}
 
 	state := tfsdk.State{
