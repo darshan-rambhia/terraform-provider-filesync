@@ -70,7 +70,9 @@ type DirectoryResourceModel struct {
 	BastionPassword types.String `tfsdk:"bastion_password"`
 
 	// Optional - security settings.
-	InsecureIgnoreHostKey types.Bool `tfsdk:"insecure_ignore_host_key"`
+	InsecureIgnoreHostKey    types.Bool   `tfsdk:"insecure_ignore_host_key"`
+	KnownHostsFile           types.String `tfsdk:"known_hosts_file"`
+	StrictHostKeyChecking    types.String `tfsdk:"strict_host_key_checking"`
 
 	// Optional - file attributes.
 	Owner types.String `tfsdk:"owner"`
@@ -224,6 +226,14 @@ resource "filesync_directory" "configs" {
 			// Optional - security settings.
 			"insecure_ignore_host_key": schema.BoolAttribute{
 				MarkdownDescription: "Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.",
+				Optional:            true,
+			},
+			"known_hosts_file": schema.StringAttribute{
+				MarkdownDescription: "Path to a custom known_hosts file for SSH host key verification. Supports ~ expansion. If not set, uses the default ~/.ssh/known_hosts. Ignored if insecure_ignore_host_key is true.",
+				Optional:            true,
+			},
+			"strict_host_key_checking": schema.StringAttribute{
+				MarkdownDescription: "SSH host key checking mode (like OpenSSH StrictHostKeyChecking). Valid values: `yes` (default) - strict checking, fail if unknown or mismatched; `no` - skip all verification (insecure); `accept-new` - accept and save new keys, fail on mismatch. Takes precedence over insecure_ignore_host_key if both are set.",
 				Optional:            true,
 			},
 
@@ -822,7 +832,20 @@ func (r *DirectoryResource) createSSHClient(data *DirectoryResourceModel) (gosft
 	if factory == nil {
 		factory = DefaultSSHClientFactory
 	}
-	return factory(config)
+	client, err := factory(config)
+	if err != nil {
+		// Provide detailed error message for debugging SSH connection issues.
+		return nil, fmt.Errorf("%w (host=%s, port=%d, user=%s, insecure_ignore_host_key=%v, has_key=%v, has_password=%v)",
+			err,
+			config.Host,
+			config.Port,
+			config.User,
+			config.InsecureIgnoreHostKey,
+			config.KeyPath != "" || config.PrivateKey != "",
+			config.Password != "",
+		)
+	}
+	return client, nil
 }
 
 // releaseSSHClient releases a connection back to the pool (if pooling enabled).

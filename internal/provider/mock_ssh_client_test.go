@@ -193,3 +193,22 @@ func MockSSHClientFactoryWithError(err error) SSHClientFactory {
 		return nil, err
 	}
 }
+
+// ConfigCapturingFactory creates a factory that captures the config for inspection.
+// This is useful for testing that SSH config options are properly passed through.
+type ConfigCapturingFactory struct {
+	Mock           *MockSSHClient
+	CapturedConfig gosftp.Config
+	Err            error
+}
+
+// Factory returns the factory function.
+func (f *ConfigCapturingFactory) Factory() SSHClientFactory {
+	return func(config gosftp.Config) (gosftp.ClientInterface, error) {
+		f.CapturedConfig = config
+		if f.Err != nil {
+			return nil, f.Err
+		}
+		return f.Mock, nil
+	}
+}

@@ -188,6 +188,118 @@ func TestFileResource_CreateSSHClient(t *testing.T) {
 	}
 }
 
+// TestFileResource_InsecureIgnoreHostKey tests that the insecure_ignore_host_key setting
+// is properly passed through to the SSH client config at resource and provider levels.
+func TestFileResource_InsecureIgnoreHostKey(t *testing.T) {
+	tests := []struct {
+		name                      string
+		providerConfig            *FilesyncProviderModel
+		data                      *FileResourceModel
+		wantInsecureIgnoreHostKey bool
+	}{
+		{
+			name: "resource level insecure_ignore_host_key = true",
+			data: &FileResourceModel{
+				Host:                  types.StringValue("192.168.1.100"),
+				SSHPort:               types.Int64Value(22),
+				SSHUser:               types.StringValue("root"),
+				SSHKeyPath:            types.StringValue("~/.ssh/id_ed25519"),
+				InsecureIgnoreHostKey: types.BoolValue(true),
+			},
+			wantInsecureIgnoreHostKey: true,
+		},
+		{
+			name: "resource level insecure_ignore_host_key = false (explicit)",
+			data: &FileResourceModel{
+				Host:                  types.StringValue("192.168.1.100"),
+				SSHPort:               types.Int64Value(22),
+				SSHUser:               types.StringValue("root"),
+				SSHKeyPath:            types.StringValue("~/.ssh/id_ed25519"),
+				InsecureIgnoreHostKey: types.BoolValue(false),
+			},
+			wantInsecureIgnoreHostKey: false,
+		},
+		{
+			name: "resource level insecure_ignore_host_key not set (null)",
+			data: &FileResourceModel{
+				Host:                  types.StringValue("192.168.1.100"),
+				SSHPort:               types.Int64Value(22),
+				SSHUser:               types.StringValue("root"),
+				SSHKeyPath:            types.StringValue("~/.ssh/id_ed25519"),
+				InsecureIgnoreHostKey: types.BoolNull(),
+			},
+			wantInsecureIgnoreHostKey: false,
+		},
+		{
+			name: "provider level insecure_ignore_host_key = true, resource not set",
+			providerConfig: &FilesyncProviderModel{
+				SSHKeyPath:            types.StringValue("~/.ssh/id_ed25519"),
+				InsecureIgnoreHostKey: types.BoolValue(true),
+			},
+			data: &FileResourceModel{
+				Host:                  types.StringValue("192.168.1.100"),
+				SSHPort:               types.Int64Value(22),
+				SSHUser:               types.StringValue("root"),
+				InsecureIgnoreHostKey: types.BoolNull(), // Not set at resource level
+			},
+			wantInsecureIgnoreHostKey: true,
+		},
+		{
+			name: "resource level overrides provider level (resource=true, provider=false)",
+			providerConfig: &FilesyncProviderModel{
+				SSHKeyPath:            types.StringValue("~/.ssh/id_ed25519"),
+				InsecureIgnoreHostKey: types.BoolValue(false),
+			},
+			data: &FileResourceModel{
+				Host:                  types.StringValue("192.168.1.100"),
+				SSHPort:               types.Int64Value(22),
+				SSHUser:               types.StringValue("root"),
+				InsecureIgnoreHostKey: types.BoolValue(true),
+			},
+			wantInsecureIgnoreHostKey: true,
+		},
+		{
+			name: "resource level overrides provider level (resource=false, provider=true)",
+			providerConfig: &FilesyncProviderModel{
+				SSHKeyPath:            types.StringValue("~/.ssh/id_ed25519"),
+				InsecureIgnoreHostKey: types.BoolValue(true),
+			},
+			data: &FileResourceModel{
+				Host:                  types.StringValue("192.168.1.100"),
+				SSHPort:               types.Int64Value(22),
+				SSHUser:               types.StringValue("root"),
+				InsecureIgnoreHostKey: types.BoolValue(false),
+			},
+			// Resource explicitly sets false, which should override provider's true.
+			// This ensures users can enable host key checking at the resource level
+			// even if the provider has it disabled globally.
+			wantInsecureIgnoreHostKey: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			factory := &ConfigCapturingFactory{
+				Mock: NewMockSSHClient(),
+			}
+			r := &FileResource{
+				providerConfig:   tt.providerConfig,
+				sshClientFactory: factory.Factory(),
+			}
+
+			_, err := r.createSSHClient(tt.data)
+			if err != nil {
+				t.Fatalf("createSSHClient() unexpected error: %v", err)
+			}
+
+			if factory.CapturedConfig.InsecureIgnoreHostKey != tt.wantInsecureIgnoreHostKey {
+				t.Errorf("InsecureIgnoreHostKey = %v, want %v",
+					factory.CapturedConfig.InsecureIgnoreHostKey, tt.wantInsecureIgnoreHostKey)
+			}
+		})
+	}
+}
+
 // TestFileResource_ImportState_ValidID tests valid import ID parsing.
 func TestFileResource_ImportState_ValidID(t *testing.T) {
 	tests := []struct {
@@ -1176,8 +1288,10 @@ func buildTerraformValue(t *testing.T, s schema.Schema, data FileResourceModel) 
 		"bastion_private_key":      tftypes.NewValue(tftypes.String, strVal(data.BastionKey)),
 		"bastion_key_path":         tftypes.NewValue(tftypes.String, strVal(data.BastionKeyPath)),
 		"bastion_password":         tftypes.NewValue(tftypes.String, strVal(data.BastionPassword)),
-		"insecure_ignore_host_key": tftypes.NewValue(tftypes.Bool, boolVal(data.InsecureIgnoreHostKey)),
-		"source_hash":              tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
+		"insecure_ignore_host_key":  tftypes.NewValue(tftypes.Bool, boolVal(data.InsecureIgnoreHostKey)),
+		"known_hosts_file":          tftypes.NewValue(tftypes.String, strVal(data.KnownHostsFile)),
+		"strict_host_key_checking":  tftypes.NewValue(tftypes.String, strVal(data.StrictHostKeyChecking)),
+		"source_hash":               tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
 		"size":                     tftypes.NewValue(tftypes.Number, intVal(data.Size)),
 	}
 
