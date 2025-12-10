@@ -31,22 +31,22 @@ type SSHConfigurable interface {
 }
 
 // Implement SSHConfigurable for FileResourceModel.
-func (m *FileResourceModel) GetHost() types.String                { return m.Host }
-func (m *FileResourceModel) GetSSHPort() types.Int64              { return m.SSHPort }
-func (m *FileResourceModel) GetSSHUser() types.String             { return m.SSHUser }
-func (m *FileResourceModel) GetSSHPassword() types.String         { return m.SSHPassword }
-func (m *FileResourceModel) GetSSHPrivateKey() types.String       { return m.SSHPrivateKey }
-func (m *FileResourceModel) GetSSHKeyPath() types.String          { return m.SSHKeyPath }
-func (m *FileResourceModel) GetSSHCertificate() types.String      { return m.SSHCertificate }
-func (m *FileResourceModel) GetSSHCertificatePath() types.String  { return m.SSHCertificatePath }
-func (m *FileResourceModel) GetBastionHost() types.String         { return m.BastionHost }
-func (m *FileResourceModel) GetBastionPort() types.Int64          { return m.BastionPort }
-func (m *FileResourceModel) GetBastionUser() types.String         { return m.BastionUser }
-func (m *FileResourceModel) GetBastionKey() types.String          { return m.BastionKey }
-func (m *FileResourceModel) GetBastionKeyPath() types.String      { return m.BastionKeyPath }
-func (m *FileResourceModel) GetBastionPassword() types.String     { return m.BastionPassword }
-func (m *FileResourceModel) GetInsecureIgnoreHostKey() types.Bool  { return m.InsecureIgnoreHostKey }
-func (m *FileResourceModel) GetKnownHostsFile() types.String       { return m.KnownHostsFile }
+func (m *FileResourceModel) GetHost() types.String                  { return m.Host }
+func (m *FileResourceModel) GetSSHPort() types.Int64                { return m.SSHPort }
+func (m *FileResourceModel) GetSSHUser() types.String               { return m.SSHUser }
+func (m *FileResourceModel) GetSSHPassword() types.String           { return m.SSHPassword }
+func (m *FileResourceModel) GetSSHPrivateKey() types.String         { return m.SSHPrivateKey }
+func (m *FileResourceModel) GetSSHKeyPath() types.String            { return m.SSHKeyPath }
+func (m *FileResourceModel) GetSSHCertificate() types.String        { return m.SSHCertificate }
+func (m *FileResourceModel) GetSSHCertificatePath() types.String    { return m.SSHCertificatePath }
+func (m *FileResourceModel) GetBastionHost() types.String           { return m.BastionHost }
+func (m *FileResourceModel) GetBastionPort() types.Int64            { return m.BastionPort }
+func (m *FileResourceModel) GetBastionUser() types.String           { return m.BastionUser }
+func (m *FileResourceModel) GetBastionKey() types.String            { return m.BastionKey }
+func (m *FileResourceModel) GetBastionKeyPath() types.String        { return m.BastionKeyPath }
+func (m *FileResourceModel) GetBastionPassword() types.String       { return m.BastionPassword }
+func (m *FileResourceModel) GetInsecureIgnoreHostKey() types.Bool   { return m.InsecureIgnoreHostKey }
+func (m *FileResourceModel) GetKnownHostsFile() types.String        { return m.KnownHostsFile }
 func (m *FileResourceModel) GetStrictHostKeyChecking() types.String { return m.StrictHostKeyChecking }
 
 // Implement SSHConfigurable for DirectoryResourceModel.
@@ -67,8 +67,10 @@ func (m *DirectoryResourceModel) GetBastionPassword() types.String    { return m
 func (m *DirectoryResourceModel) GetInsecureIgnoreHostKey() types.Bool {
 	return m.InsecureIgnoreHostKey
 }
-func (m *DirectoryResourceModel) GetKnownHostsFile() types.String        { return m.KnownHostsFile }
-func (m *DirectoryResourceModel) GetStrictHostKeyChecking() types.String { return m.StrictHostKeyChecking }
+func (m *DirectoryResourceModel) GetKnownHostsFile() types.String { return m.KnownHostsFile }
+func (m *DirectoryResourceModel) GetStrictHostKeyChecking() types.String {
+	return m.StrictHostKeyChecking
+}
 
 // BuildSSHConfig creates an gosftp.Config from resource data and provider config.
 func BuildSSHConfig(data SSHConfigurable, providerConfig *FilesyncProviderModel) gosftp.Config {

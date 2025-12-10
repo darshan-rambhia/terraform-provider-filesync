@@ -1288,10 +1288,10 @@ func buildTerraformValue(t *testing.T, s schema.Schema, data FileResourceModel) 
 		"bastion_private_key":      tftypes.NewValue(tftypes.String, strVal(data.BastionKey)),
 		"bastion_key_path":         tftypes.NewValue(tftypes.String, strVal(data.BastionKeyPath)),
 		"bastion_password":         tftypes.NewValue(tftypes.String, strVal(data.BastionPassword)),
-		"insecure_ignore_host_key":  tftypes.NewValue(tftypes.Bool, boolVal(data.InsecureIgnoreHostKey)),
-		"known_hosts_file":          tftypes.NewValue(tftypes.String, strVal(data.KnownHostsFile)),
-		"strict_host_key_checking":  tftypes.NewValue(tftypes.String, strVal(data.StrictHostKeyChecking)),
-		"source_hash":               tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
+		"insecure_ignore_host_key": tftypes.NewValue(tftypes.Bool, boolVal(data.InsecureIgnoreHostKey)),
+		"known_hosts_file":         tftypes.NewValue(tftypes.String, strVal(data.KnownHostsFile)),
+		"strict_host_key_checking": tftypes.NewValue(tftypes.String, strVal(data.StrictHostKeyChecking)),
+		"source_hash":              tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
 		"size":                     tftypes.NewValue(tftypes.Number, intVal(data.Size)),
 	}
 

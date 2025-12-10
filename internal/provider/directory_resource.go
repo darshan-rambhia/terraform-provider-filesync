@@ -70,9 +70,9 @@ type DirectoryResourceModel struct {
 	BastionPassword types.String `tfsdk:"bastion_password"`
 
 	// Optional - security settings.
-	InsecureIgnoreHostKey    types.Bool   `tfsdk:"insecure_ignore_host_key"`
-	KnownHostsFile           types.String `tfsdk:"known_hosts_file"`
-	StrictHostKeyChecking    types.String `tfsdk:"strict_host_key_checking"`
+	InsecureIgnoreHostKey types.Bool   `tfsdk:"insecure_ignore_host_key"`
+	KnownHostsFile        types.String `tfsdk:"known_hosts_file"`
+	StrictHostKeyChecking types.String `tfsdk:"strict_host_key_checking"`
 
 	// Optional - file attributes.
 	Owner types.String `tfsdk:"owner"`

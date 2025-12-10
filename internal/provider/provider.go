@@ -46,9 +46,9 @@ type FilesyncProviderModel struct {
 	ConnectionPoolEnabled types.Bool `tfsdk:"connection_pool_enabled"`
 
 	// Host key verification.
-	InsecureIgnoreHostKey    types.Bool   `tfsdk:"insecure_ignore_host_key"`
-	KnownHostsFile           types.String `tfsdk:"known_hosts_file"`
-	StrictHostKeyChecking    types.String `tfsdk:"strict_host_key_checking"`
+	InsecureIgnoreHostKey types.Bool   `tfsdk:"insecure_ignore_host_key"`
+	KnownHostsFile        types.String `tfsdk:"known_hosts_file"`
+	StrictHostKeyChecking types.String `tfsdk:"strict_host_key_checking"`
 
 	// Retry configuration.
 	MaxRetries types.Int64 `tfsdk:"max_retries"`
