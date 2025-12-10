@@ -60,6 +60,7 @@ resource "filesync_file" "config" {
 - `bastion_user` (String) Default SSH user for bastion host. Falls back to ssh_user if not set.
 - `connection_pool_enabled` (Boolean) Enable SSH connection pooling for improved performance when managing multiple files on the same host. Connections are reused across resources and automatically cleaned up after 5 minutes of inactivity. Defaults to false.
 - `insecure_ignore_host_key` (Boolean) Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.
+- `known_hosts_file` (String) Path to a custom known_hosts file for SSH host key verification. Supports ~ expansion. If not set, uses the default ~/.ssh/known_hosts.
 - `max_retries` (Number) Maximum number of retry attempts for transient SSH failures (connection timeouts, network errors). Set to 0 to disable retries. Defaults to 3.
 - `ssh_certificate` (String, Sensitive) Default SSH certificate content for certificate authentication. Used with ssh_private_key or ssh_key_path.
 - `ssh_certificate_path` (String) Default path to SSH certificate file for certificate authentication. Used with ssh_private_key or ssh_key_path.
@@ -68,3 +69,4 @@ resource "filesync_file" "config" {
 - `ssh_port` (Number) Default SSH port. Defaults to 22.
 - `ssh_private_key` (String, Sensitive) Default SSH private key content (sensitive). Mutually exclusive with ssh_key_path.
 - `ssh_user` (String) Default SSH user for connections. Can be overridden per-resource.
+- `strict_host_key_checking` (String) SSH host key checking mode (like OpenSSH StrictHostKeyChecking). Valid values: `yes` (default) - strict checking, fail if unknown or mismatched; `no` - skip all verification (insecure); `accept-new` - accept and save new keys, fail on mismatch. Takes precedence over insecure_ignore_host_key if both are set.

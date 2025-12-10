@@ -87,6 +87,7 @@ resource "filesync_directory" "configs" {
 - `exclude` (List of String) List of glob patterns to exclude from sync (e.g., `*.tmp`, `.git`, `.DS_Store`). Supports standard glob syntax with `*` and `?` wildcards.
 - `group` (String) File group on remote. Defaults to the SSH user's primary group.
 - `insecure_ignore_host_key` (Boolean) Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.
+- `known_hosts_file` (String) Path to a custom known_hosts file for SSH host key verification. Supports ~ expansion. If not set, uses the default ~/.ssh/known_hosts. Ignored if insecure_ignore_host_key is true.
 - `mode` (String) File permissions in octal notation (e.g., '0644' for rw-r--r--) applied to all files. Must be 3-4 digits. Defaults to '0644'.
 - `owner` (String) File owner on remote. Defaults to the SSH user.
 - `parallel_uploads` (Number) Number of files to upload in parallel. Set to 1 for sequential uploads. Higher values improve performance but use more connections. Defaults to 4.
@@ -97,6 +98,7 @@ resource "filesync_directory" "configs" {
 - `ssh_port` (Number) SSH port. Defaults to 22.
 - `ssh_private_key` (String, Sensitive) SSH private key content. Mutually exclusive with ssh_key_path.
 - `ssh_user` (String) SSH user. Overrides provider default.
+- `strict_host_key_checking` (String) SSH host key checking mode (like OpenSSH StrictHostKeyChecking). Valid values: `yes` (default) - strict checking, fail if unknown or mismatched; `no` - skip all verification (insecure); `accept-new` - accept and save new keys, fail on mismatch. Takes precedence over insecure_ignore_host_key if both are set.
 - `symlink_policy` (String) How to handle symbolic links. Options: `follow` (default) - follow symlinks and copy target content; `skip` - ignore symlinks; `preserve` - create symlinks on remote (requires remote support).
 
 ### Read-Only
