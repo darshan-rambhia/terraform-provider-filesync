@@ -26,6 +26,8 @@ type SSHConfigurable interface {
 	GetBastionKeyPath() types.String
 	GetBastionPassword() types.String
 	GetInsecureIgnoreHostKey() types.Bool
+	GetKnownHostsFile() types.String
+	GetStrictHostKeyChecking() types.String
 }
 
 // Implement SSHConfigurable for FileResourceModel.
@@ -43,7 +45,9 @@ func (m *FileResourceModel) GetBastionUser() types.String         { return m.Bas
 func (m *FileResourceModel) GetBastionKey() types.String          { return m.BastionKey }
 func (m *FileResourceModel) GetBastionKeyPath() types.String      { return m.BastionKeyPath }
 func (m *FileResourceModel) GetBastionPassword() types.String     { return m.BastionPassword }
-func (m *FileResourceModel) GetInsecureIgnoreHostKey() types.Bool { return m.InsecureIgnoreHostKey }
+func (m *FileResourceModel) GetInsecureIgnoreHostKey() types.Bool  { return m.InsecureIgnoreHostKey }
+func (m *FileResourceModel) GetKnownHostsFile() types.String       { return m.KnownHostsFile }
+func (m *FileResourceModel) GetStrictHostKeyChecking() types.String { return m.StrictHostKeyChecking }
 
 // Implement SSHConfigurable for DirectoryResourceModel.
 func (m *DirectoryResourceModel) GetHost() types.String               { return m.Host }
@@ -63,6 +67,8 @@ func (m *DirectoryResourceModel) GetBastionPassword() types.String    { return m
 func (m *DirectoryResourceModel) GetInsecureIgnoreHostKey() types.Bool {
 	return m.InsecureIgnoreHostKey
 }
+func (m *DirectoryResourceModel) GetKnownHostsFile() types.String        { return m.KnownHostsFile }
+func (m *DirectoryResourceModel) GetStrictHostKeyChecking() types.String { return m.StrictHostKeyChecking }
 
 // BuildSSHConfig creates an gosftp.Config from resource data and provider config.
 func BuildSSHConfig(data SSHConfigurable, providerConfig *FilesyncProviderModel) gosftp.Config {
@@ -143,10 +149,30 @@ func BuildSSHConfig(data SSHConfigurable, providerConfig *FilesyncProviderModel)
 	}
 
 	// Check insecure host key setting.
-	if !data.GetInsecureIgnoreHostKey().IsNull() && data.GetInsecureIgnoreHostKey().ValueBool() {
-		config.InsecureIgnoreHostKey = true
+	// Resource-level setting takes precedence over provider-level if explicitly set.
+	if !data.GetInsecureIgnoreHostKey().IsNull() {
+		// Resource explicitly set this value (true or false), use it.
+		config.InsecureIgnoreHostKey = data.GetInsecureIgnoreHostKey().ValueBool()
 	} else if providerConfig != nil && !providerConfig.InsecureIgnoreHostKey.IsNull() {
+		// Resource didn't set it, fall back to provider-level setting.
 		config.InsecureIgnoreHostKey = providerConfig.InsecureIgnoreHostKey.ValueBool()
+	}
+
+	// Check known_hosts_file setting.
+	// Resource-level setting takes precedence over provider-level if set.
+	if !data.GetKnownHostsFile().IsNull() && data.GetKnownHostsFile().ValueString() != "" {
+		config.KnownHostsFile = ExpandPath(data.GetKnownHostsFile().ValueString())
+	} else if providerConfig != nil && !providerConfig.KnownHostsFile.IsNull() && providerConfig.KnownHostsFile.ValueString() != "" {
+		config.KnownHostsFile = ExpandPath(providerConfig.KnownHostsFile.ValueString())
+	}
+
+	// Check strict_host_key_checking setting.
+	// Resource-level setting takes precedence over provider-level if set.
+	// Valid values: "yes", "no", "accept-new"
+	if !data.GetStrictHostKeyChecking().IsNull() && data.GetStrictHostKeyChecking().ValueString() != "" {
+		config.StrictHostKeyChecking = gosftp.StrictHostKeyChecking(data.GetStrictHostKeyChecking().ValueString())
+	} else if providerConfig != nil && !providerConfig.StrictHostKeyChecking.IsNull() && providerConfig.StrictHostKeyChecking.ValueString() != "" {
+		config.StrictHostKeyChecking = gosftp.StrictHostKeyChecking(providerConfig.StrictHostKeyChecking.ValueString())
 	}
 
 	return config

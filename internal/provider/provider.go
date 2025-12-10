@@ -46,7 +46,9 @@ type FilesyncProviderModel struct {
 	ConnectionPoolEnabled types.Bool `tfsdk:"connection_pool_enabled"`
 
 	// Host key verification.
-	InsecureIgnoreHostKey types.Bool `tfsdk:"insecure_ignore_host_key"`
+	InsecureIgnoreHostKey    types.Bool   `tfsdk:"insecure_ignore_host_key"`
+	KnownHostsFile           types.String `tfsdk:"known_hosts_file"`
+	StrictHostKeyChecking    types.String `tfsdk:"strict_host_key_checking"`
 
 	// Retry configuration.
 	MaxRetries types.Int64 `tfsdk:"max_retries"`
@@ -158,6 +160,14 @@ resource "filesync_file" "config" {
 			},
 			"insecure_ignore_host_key": schema.BoolAttribute{
 				MarkdownDescription: "Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.",
+				Optional:            true,
+			},
+			"known_hosts_file": schema.StringAttribute{
+				MarkdownDescription: "Path to a custom known_hosts file for SSH host key verification. Supports ~ expansion. If not set, uses the default ~/.ssh/known_hosts.",
+				Optional:            true,
+			},
+			"strict_host_key_checking": schema.StringAttribute{
+				MarkdownDescription: "SSH host key checking mode (like OpenSSH StrictHostKeyChecking). Valid values: `yes` (default) - strict checking, fail if unknown or mismatched; `no` - skip all verification (insecure); `accept-new` - accept and save new keys, fail on mismatch. Takes precedence over insecure_ignore_host_key if both are set.",
 				Optional:            true,
 			},
 			"max_retries": schema.Int64Attribute{
