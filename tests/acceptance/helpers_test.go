@@ -430,3 +430,53 @@ func CheckHashChanged(resourceName string, oldHashPtr *string) resource.TestChec
 		return nil
 	}
 }
+
+// FileResourceConfigWithCheckRemoteOnPlan generates a filesync_file resource config with check_remote_on_plan enabled.
+func (c *TestSSHConfig) FileResourceConfigWithCheckRemoteOnPlan(name, source, destination, mode string) string {
+	return fmt.Sprintf(`%s
+resource "filesync_file" %q {
+  source               = %q
+  destination          = %q
+  host                 = %q
+  mode                 = %q
+  check_remote_on_plan = true
+%s%s}
+`, c.ProviderBlock(), name, source, destination, c.Host, mode, c.SSHAttributes(), c.OwnerAttributes())
+}
+
+// FileResourceConfigWithImportSyncsLocal generates a filesync_file resource config with import_syncs_local enabled.
+func (c *TestSSHConfig) FileResourceConfigWithImportSyncsLocal(name, source, destination, mode string) string {
+	return fmt.Sprintf(`%s
+resource "filesync_file" %q {
+  source            = %q
+  destination       = %q
+  host              = %q
+  mode              = %q
+  import_syncs_local = true
+%s%s}
+`, c.ProviderBlock(), name, source, destination, c.Host, mode, c.SSHAttributes(), c.OwnerAttributes())
+}
+
+// CheckLocalFileContent returns a TestCheckFunc that verifies local file content.
+func CheckLocalFileContent(path, expected string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read local file %s: %w", path, err)
+		}
+		if string(content) != expected {
+			return fmt.Errorf("local file content mismatch:\n  expected: %q\n  got: %q", expected, string(content))
+		}
+		return nil
+	}
+}
+
+// CheckLocalFileExists returns a TestCheckFunc that verifies a local file exists.
+func CheckLocalFileExists(path string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return fmt.Errorf("local file %s does not exist", path)
+		}
+		return nil
+	}
+}

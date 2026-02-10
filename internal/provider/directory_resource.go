@@ -239,19 +239,19 @@ resource "filesync_directory" "configs" {
 
 			// Optional - file attributes.
 			"owner": schema.StringAttribute{
-				MarkdownDescription: "File owner on remote. Defaults to the SSH user.",
+				MarkdownDescription: "File owner on remote. If not set, no ownership change is made (file is owned by the SSH user). Set explicitly to change ownership (requires appropriate permissions).",
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString("root"),
+				Default:             stringdefault.StaticString(""),
 				Validators: []validator.String{
 					UnixOwner(),
 				},
 			},
 			"group": schema.StringAttribute{
-				MarkdownDescription: "File group on remote. Defaults to the SSH user's primary group.",
+				MarkdownDescription: "File group on remote. If not set, no group change is made. Set explicitly to change group (requires appropriate permissions).",
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString("root"),
+				Default:             stringdefault.StaticString(""),
 				Validators: []validator.String{
 					UnixGroup(),
 				},

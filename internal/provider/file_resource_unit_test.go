@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -1291,6 +1292,9 @@ func buildTerraformValue(t *testing.T, s schema.Schema, data FileResourceModel) 
 		"insecure_ignore_host_key": tftypes.NewValue(tftypes.Bool, boolVal(data.InsecureIgnoreHostKey)),
 		"known_hosts_file":         tftypes.NewValue(tftypes.String, strVal(data.KnownHostsFile)),
 		"strict_host_key_checking": tftypes.NewValue(tftypes.String, strVal(data.StrictHostKeyChecking)),
+		"check_remote_on_plan":     tftypes.NewValue(tftypes.Bool, boolVal(data.CheckRemoteOnPlan)),
+		"import_syncs_local":       tftypes.NewValue(tftypes.Bool, boolVal(data.ImportSyncsLocal)),
+		"host_agnostic_id":         tftypes.NewValue(tftypes.Bool, boolVal(data.HostAgnosticID)),
 		"source_hash":              tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
 		"size":                     tftypes.NewValue(tftypes.Number, intVal(data.Size)),
 	}
@@ -1425,6 +1429,1021 @@ func TestSourceHashPlanModifier(t *testing.T) {
 			t.Error("should not modify value on destroy")
 		}
 	})
+}
+
+// TestFileResource_CheckRemoteDrift tests the checkRemoteDrift method.
+func TestFileResource_CheckRemoteDrift(t *testing.T) {
+	tests := []struct {
+		name           string
+		data           *FileResourceModel
+		mockSetup      func(*MockSSHClient)
+		factoryErr     error
+		wantDrift      bool
+		wantRemoteHash string
+		wantErr        bool
+	}{
+		{
+			name: "check_remote_on_plan disabled - no check performed",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolValue(false),
+			},
+			mockSetup: func(m *MockSSHClient) {
+				// Should not be called
+			},
+			wantDrift:      false,
+			wantRemoteHash: "",
+			wantErr:        false,
+		},
+		{
+			name: "check_remote_on_plan null - no check performed",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolNull(),
+			},
+			mockSetup: func(m *MockSSHClient) {},
+			wantDrift: false,
+			wantErr:   false,
+		},
+		{
+			name: "no state hash - skip check",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringNull(),
+				CheckRemoteOnPlan: types.BoolValue(true),
+			},
+			mockSetup: func(m *MockSSHClient) {},
+			wantDrift: false,
+			wantErr:   false,
+		},
+		{
+			name: "no drift - hashes match",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolValue(true),
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = true
+				m.FileHashes["/remote/test.txt"] = "sha256:abc123"
+			},
+			wantDrift:      false,
+			wantRemoteHash: "sha256:abc123",
+			wantErr:        false,
+		},
+		{
+			name: "drift detected - hashes differ",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolValue(true),
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = true
+				m.FileHashes["/remote/test.txt"] = "sha256:def456"
+			},
+			wantDrift:      true,
+			wantRemoteHash: "sha256:def456",
+			wantErr:        false,
+		},
+		{
+			name: "drift detected - remote file deleted",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolValue(true),
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = false
+			},
+			wantDrift:      true,
+			wantRemoteHash: "",
+			wantErr:        false,
+		},
+		{
+			name: "SSH connection error",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolValue(true),
+			},
+			factoryErr: errors.New("connection refused"),
+			wantDrift:  false,
+			wantErr:    true,
+		},
+		{
+			name: "file exists check error",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolValue(true),
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistsError = errors.New("permission denied")
+			},
+			wantDrift: false,
+			wantErr:   true,
+		},
+		{
+			name: "get hash error",
+			data: &FileResourceModel{
+				Host:              types.StringValue("192.168.1.100"),
+				Destination:       types.StringValue("/remote/test.txt"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolValue(true),
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = true
+				m.GetHashError = errors.New("hash computation failed")
+			},
+			wantDrift: false,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var r *FileResource
+			if tt.factoryErr != nil {
+				r = &FileResource{
+					sshClientFactory: MockSSHClientFactoryWithError(tt.factoryErr),
+				}
+			} else {
+				mock := NewMockSSHClient()
+				if tt.mockSetup != nil {
+					tt.mockSetup(mock)
+				}
+				r = &FileResource{
+					sshClientFactory: MockSSHClientFactory(mock),
+				}
+			}
+
+			hasDrift, remoteHash, err := r.checkRemoteDrift(context.Background(), tt.data)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("checkRemoteDrift() expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("checkRemoteDrift() unexpected error: %v", err)
+				return
+			}
+
+			if hasDrift != tt.wantDrift {
+				t.Errorf("checkRemoteDrift() hasDrift = %v, want %v", hasDrift, tt.wantDrift)
+			}
+			if remoteHash != tt.wantRemoteHash {
+				t.Errorf("checkRemoteDrift() remoteHash = %v, want %v", remoteHash, tt.wantRemoteHash)
+			}
+		})
+	}
+}
+
+// TestFileResource_SyncLocalFromRemote tests the syncLocalFromRemote method.
+func TestFileResource_SyncLocalFromRemote(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       *FileResourceModel
+		mockSetup  func(*MockSSHClient)
+		factoryErr error
+		wantErr    bool
+		checkFile  bool // whether to verify local file was created
+	}{
+		{
+			name: "successful sync",
+			data: &FileResourceModel{
+				Host:        types.StringValue("192.168.1.100"),
+				Destination: types.StringValue("/remote/config.json"),
+				SSHPort:     types.Int64Value(22),
+				SSHUser:     types.StringValue("root"),
+				// Source will be set in test
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/config.json"] = true
+				m.FileContents["/remote/config.json"] = []byte(`{"key": "value"}`)
+			},
+			wantErr:   false,
+			checkFile: true,
+		},
+		{
+			name: "source path not set",
+			data: &FileResourceModel{
+				Host:        types.StringValue("192.168.1.100"),
+				Destination: types.StringValue("/remote/config.json"),
+				SSHPort:     types.Int64Value(22),
+				SSHUser:     types.StringValue("root"),
+				Source:      types.StringValue(""),
+			},
+			mockSetup: func(m *MockSSHClient) {},
+			wantErr:   true,
+			checkFile: false,
+		},
+		{
+			name: "SSH connection error",
+			data: &FileResourceModel{
+				Host:        types.StringValue("192.168.1.100"),
+				Destination: types.StringValue("/remote/config.json"),
+				SSHPort:     types.Int64Value(22),
+				SSHUser:     types.StringValue("root"),
+				// Source will be set in test
+			},
+			factoryErr: errors.New("connection refused"),
+			wantErr:    true,
+			checkFile:  false,
+		},
+		{
+			name: "remote file does not exist",
+			data: &FileResourceModel{
+				Host:        types.StringValue("192.168.1.100"),
+				Destination: types.StringValue("/remote/config.json"),
+				SSHPort:     types.Int64Value(22),
+				SSHUser:     types.StringValue("root"),
+				// Source will be set in test
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/config.json"] = false
+			},
+			wantErr:   true,
+			checkFile: false,
+		},
+		{
+			name: "file exists check error",
+			data: &FileResourceModel{
+				Host:        types.StringValue("192.168.1.100"),
+				Destination: types.StringValue("/remote/config.json"),
+				SSHPort:     types.Int64Value(22),
+				SSHUser:     types.StringValue("root"),
+				// Source will be set in test
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistsError = errors.New("permission denied")
+			},
+			wantErr:   true,
+			checkFile: false,
+		},
+		{
+			name: "read content error",
+			data: &FileResourceModel{
+				Host:        types.StringValue("192.168.1.100"),
+				Destination: types.StringValue("/remote/config.json"),
+				SSHPort:     types.Int64Value(22),
+				SSHUser:     types.StringValue("root"),
+				// Source will be set in test
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/config.json"] = true
+				m.ReadContentError = errors.New("read failed")
+			},
+			wantErr:   true,
+			checkFile: false,
+		},
+		{
+			name: "creates parent directories",
+			data: &FileResourceModel{
+				Host:        types.StringValue("192.168.1.100"),
+				Destination: types.StringValue("/remote/config.json"),
+				SSHPort:     types.Int64Value(22),
+				SSHUser:     types.StringValue("root"),
+				// Source will be set to a nested path
+			},
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/config.json"] = true
+				m.FileContents["/remote/config.json"] = []byte(`nested content`)
+			},
+			wantErr:   false,
+			checkFile: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			var sourcePath string
+
+			// Set source path for tests that need it
+			if tt.data.Source.IsNull() || tt.data.Source.ValueString() == "" {
+				if tt.name != "source path not set" {
+					if tt.name == "creates parent directories" {
+						sourcePath = filepath.Join(tmpDir, "nested", "dir", "config.json")
+					} else {
+						sourcePath = filepath.Join(tmpDir, "local-config.json")
+					}
+					tt.data.Source = types.StringValue(sourcePath)
+				}
+			} else {
+				sourcePath = tt.data.Source.ValueString()
+			}
+
+			var r *FileResource
+			if tt.factoryErr != nil {
+				r = &FileResource{
+					sshClientFactory: MockSSHClientFactoryWithError(tt.factoryErr),
+				}
+			} else {
+				mock := NewMockSSHClient()
+				if tt.mockSetup != nil {
+					tt.mockSetup(mock)
+				}
+				r = &FileResource{
+					sshClientFactory: MockSSHClientFactory(mock),
+				}
+			}
+
+			err := r.syncLocalFromRemote(context.Background(), tt.data)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("syncLocalFromRemote() expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("syncLocalFromRemote() unexpected error: %v", err)
+				return
+			}
+
+			if tt.checkFile {
+				// Verify the local file was created
+				content, err := os.ReadFile(sourcePath)
+				if err != nil {
+					t.Errorf("failed to read created local file: %v", err)
+					return
+				}
+				if len(content) == 0 {
+					t.Error("local file is empty")
+				}
+			}
+		})
+	}
+}
+
+// TestFileResource_Read_WithCheckRemoteOnPlan tests Read with check_remote_on_plan enabled.
+func TestFileResource_Read_WithCheckRemoteOnPlan(t *testing.T) {
+	tests := []struct {
+		name            string
+		mockSetup       func(*MockSSHClient)
+		factoryErr      error
+		wantWarning     bool
+		warningContains string
+	}{
+		{
+			name: "no drift detected",
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = true
+				m.FileHashes["/remote/test.txt"] = "sha256:abc123"
+			},
+			wantWarning: false,
+		},
+		{
+			name: "drift detected - shows warning",
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = true
+				m.FileHashes["/remote/test.txt"] = "sha256:different"
+			},
+			wantWarning:     true,
+			warningContains: "drift detected",
+		},
+		{
+			name: "remote file missing - shows warning",
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = false
+			},
+			wantWarning:     true,
+			warningContains: "does not exist",
+		},
+		{
+			name:            "SSH connection error - shows warning",
+			factoryErr:      errors.New("connection refused"),
+			wantWarning:     true,
+			warningContains: "drift check failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			sourceFile := filepath.Join(tmpDir, "source.txt")
+			if err := os.WriteFile(sourceFile, []byte("test content"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			var r *FileResource
+			if tt.factoryErr != nil {
+				r = &FileResource{
+					sshClientFactory: MockSSHClientFactoryWithError(tt.factoryErr),
+				}
+			} else {
+				mock := NewMockSSHClient()
+				if tt.mockSetup != nil {
+					tt.mockSetup(mock)
+				}
+				r = &FileResource{
+					sshClientFactory: MockSSHClientFactory(mock),
+				}
+			}
+
+			data := FileResourceModel{
+				Source:            types.StringValue(sourceFile),
+				Destination:       types.StringValue("/remote/test.txt"),
+				Host:              types.StringValue("192.168.1.100"),
+				SSHPort:           types.Int64Value(22),
+				SSHUser:           types.StringValue("root"),
+				ID:                types.StringValue("192.168.1.100:/remote/test.txt"),
+				SourceHash:        types.StringValue("sha256:abc123"),
+				CheckRemoteOnPlan: types.BoolValue(true),
+			}
+
+			var schemaResp resource.SchemaResponse
+			r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+			stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+			req := resource.ReadRequest{
+				State: tfsdk.State{
+					Schema: schemaResp.Schema,
+					Raw:    stateVal,
+				},
+			}
+
+			resp := &resource.ReadResponse{
+				State: tfsdk.State{
+					Schema: schemaResp.Schema,
+					Raw:    stateVal,
+				},
+			}
+
+			r.Read(context.Background(), req, resp)
+
+			// Check for warnings
+			hasWarning := false
+			warningText := ""
+			for _, diag := range resp.Diagnostics {
+				if diag.Severity().String() == "Warning" {
+					hasWarning = true
+					warningText = diag.Detail()
+					break
+				}
+			}
+
+			if tt.wantWarning && !hasWarning {
+				t.Error("Read() expected warning, got none")
+			}
+			if !tt.wantWarning && hasWarning {
+				t.Errorf("Read() unexpected warning: %s", warningText)
+			}
+			if tt.wantWarning && tt.warningContains != "" {
+				found := false
+				for _, diag := range resp.Diagnostics {
+					if diag.Severity().String() == "Warning" {
+						if strings.Contains(strings.ToLower(diag.Summary()), tt.warningContains) ||
+							strings.Contains(strings.ToLower(diag.Detail()), tt.warningContains) {
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					t.Errorf("Read() warning should contain %q, got: %s", tt.warningContains, warningText)
+				}
+			}
+		})
+	}
+}
+
+// TestFileResource_Read_WithImportSyncsLocal tests Read with import_syncs_local enabled.
+func TestFileResource_Read_WithImportSyncsLocal(t *testing.T) {
+	tests := []struct {
+		name          string
+		setupLocal    bool // whether to create local file first
+		mockSetup     func(*MockSSHClient)
+		factoryErr    error
+		wantErr       bool
+		wantLocalFile bool // whether local file should exist after
+	}{
+		{
+			name:       "syncs when local file missing and state hash empty",
+			setupLocal: false,
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = true
+				m.FileContents["/remote/test.txt"] = []byte("remote content")
+				m.FileHashes["/remote/test.txt"] = "sha256:remotehash"
+			},
+			wantErr:       false,
+			wantLocalFile: true,
+		},
+		{
+			name:       "skips sync when local file exists",
+			setupLocal: true,
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = true
+				m.FileContents["/remote/test.txt"] = []byte("remote content")
+			},
+			wantErr:       false,
+			wantLocalFile: true,
+		},
+		{
+			name:       "error when remote sync fails",
+			setupLocal: false,
+			mockSetup: func(m *MockSSHClient) {
+				m.ExistingFiles["/remote/test.txt"] = false // Remote doesn't exist
+			},
+			wantErr:       true,
+			wantLocalFile: false,
+		},
+		{
+			name:       "error when SSH connection fails",
+			setupLocal: false,
+			factoryErr: errors.New("connection refused"),
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			sourceFile := filepath.Join(tmpDir, "source.txt")
+
+			if tt.setupLocal {
+				if err := os.WriteFile(sourceFile, []byte("local content"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var r *FileResource
+			if tt.factoryErr != nil {
+				r = &FileResource{
+					sshClientFactory: MockSSHClientFactoryWithError(tt.factoryErr),
+				}
+			} else {
+				mock := NewMockSSHClient()
+				if tt.mockSetup != nil {
+					tt.mockSetup(mock)
+				}
+				r = &FileResource{
+					sshClientFactory: MockSSHClientFactory(mock),
+				}
+			}
+
+			data := FileResourceModel{
+				Source:           types.StringValue(sourceFile),
+				Destination:      types.StringValue("/remote/test.txt"),
+				Host:             types.StringValue("192.168.1.100"),
+				SSHPort:          types.Int64Value(22),
+				SSHUser:          types.StringValue("root"),
+				ID:               types.StringValue("192.168.1.100:/remote/test.txt"),
+				SourceHash:       types.StringNull(), // Empty hash indicates fresh import
+				ImportSyncsLocal: types.BoolValue(true),
+			}
+
+			var schemaResp resource.SchemaResponse
+			r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+			stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+			req := resource.ReadRequest{
+				State: tfsdk.State{
+					Schema: schemaResp.Schema,
+					Raw:    stateVal,
+				},
+			}
+
+			resp := &resource.ReadResponse{
+				State: tfsdk.State{
+					Schema: schemaResp.Schema,
+					Raw:    stateVal,
+				},
+			}
+
+			r.Read(context.Background(), req, resp)
+
+			if tt.wantErr {
+				if !resp.Diagnostics.HasError() {
+					t.Error("Read() expected error, got none")
+				}
+				return
+			}
+
+			if resp.Diagnostics.HasError() {
+				t.Errorf("Read() unexpected error: %v", resp.Diagnostics)
+				return
+			}
+
+			// Check if local file exists as expected
+			_, err := os.Stat(sourceFile)
+			fileExists := err == nil
+
+			if tt.wantLocalFile && !fileExists {
+				t.Error("Read() expected local file to be created, but it doesn't exist")
+			}
+		})
+	}
+}
+
+// TestFileResource_Read_SourceNotSet tests Read when source is not set (after import).
+func TestFileResource_Read_SourceNotSet(t *testing.T) {
+	r := &FileResource{}
+
+	data := FileResourceModel{
+		Source:      types.StringNull(), // Not set after import
+		Destination: types.StringValue("/remote/test.txt"),
+		Host:        types.StringValue("192.168.1.100"),
+		ID:          types.StringValue("192.168.1.100:/remote/test.txt"),
+	}
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+	req := resource.ReadRequest{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	resp := &resource.ReadResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	r.Read(context.Background(), req, resp)
+
+	// Should not error - just preserve state
+	if resp.Diagnostics.HasError() {
+		t.Errorf("Read() unexpected error: %v", resp.Diagnostics)
+	}
+}
+
+// TestFileResource_Read_EmptySourceString tests Read with empty source string.
+func TestFileResource_Read_EmptySourceString(t *testing.T) {
+	r := &FileResource{}
+
+	data := FileResourceModel{
+		Source:      types.StringValue(""), // Empty string
+		Destination: types.StringValue("/remote/test.txt"),
+		Host:        types.StringValue("192.168.1.100"),
+		ID:          types.StringValue("192.168.1.100:/remote/test.txt"),
+	}
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+	req := resource.ReadRequest{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	resp := &resource.ReadResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	r.Read(context.Background(), req, resp)
+
+	// Should not error - just preserve state
+	if resp.Diagnostics.HasError() {
+		t.Errorf("Read() unexpected error: %v", resp.Diagnostics)
+	}
+}
+
+// TestFileResource_Update_NoDrift tests update when remote file has not drifted.
+func TestFileResource_Update_NoDrift(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "source.txt")
+	if err := os.WriteFile(sourceFile, []byte("updated content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := NewMockSSHClient()
+	// Remote hash matches state hash - no drift
+	mock.FileHashes["/remote/test.txt"] = "sha256:originalhash"
+	mock.ExistingFiles["/remote/test.txt"] = true
+	r := &FileResource{
+		sshClientFactory: MockSSHClientFactory(mock),
+	}
+
+	data := FileResourceModel{
+		Source:      types.StringValue(sourceFile),
+		Destination: types.StringValue("/remote/test.txt"),
+		Host:        types.StringValue("192.168.1.100"),
+		SSHPort:     types.Int64Value(22),
+		SSHUser:     types.StringValue("root"),
+		ID:          types.StringValue("192.168.1.100:/remote/test.txt"),
+		SourceHash:  types.StringValue("sha256:originalhash"),
+		Mode:        types.StringValue("0644"),
+		Owner:       types.StringValue("root"),
+		Group:       types.StringValue("root"),
+	}
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	planVal := buildTerraformValue(t, schemaResp.Schema, data)
+	stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+
+	req := resource.UpdateRequest{
+		Plan: tfsdk.Plan{
+			Schema: schemaResp.Schema,
+			Raw:    planVal,
+		},
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	resp := &resource.UpdateResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(context.Background()), nil),
+		},
+	}
+
+	r.Update(context.Background(), req, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Errorf("Update() unexpected error: %v", resp.Diagnostics)
+	}
+
+	if mock.UploadCalls != 1 {
+		t.Errorf("expected 1 upload call, got %d", mock.UploadCalls)
+	}
+}
+
+// TestFileResource_Update_FileNotFoundAfterImport tests update when remote file doesn't exist (e.g., first apply after import).
+func TestFileResource_Update_FileNotFoundAfterImport(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "source.txt")
+	if err := os.WriteFile(sourceFile, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := NewMockSSHClient()
+	// File doesn't exist on remote - simulating first upload after import
+	mock.ExistingFiles["/remote/test.txt"] = false
+	r := &FileResource{
+		sshClientFactory: MockSSHClientFactory(mock),
+	}
+
+	data := FileResourceModel{
+		Source:      types.StringValue(sourceFile),
+		Destination: types.StringValue("/remote/test.txt"),
+		Host:        types.StringValue("192.168.1.100"),
+		SSHPort:     types.Int64Value(22),
+		SSHUser:     types.StringValue("root"),
+		ID:          types.StringValue("192.168.1.100:/remote/test.txt"),
+		SourceHash:  types.StringValue("sha256:abc123"),
+		Mode:        types.StringValue("0644"),
+		Owner:       types.StringValue("root"),
+		Group:       types.StringValue("root"),
+	}
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	planVal := buildTerraformValue(t, schemaResp.Schema, data)
+	stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+
+	req := resource.UpdateRequest{
+		Plan: tfsdk.Plan{
+			Schema: schemaResp.Schema,
+			Raw:    planVal,
+		},
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	resp := &resource.UpdateResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(context.Background()), nil),
+		},
+	}
+
+	r.Update(context.Background(), req, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Errorf("Update() unexpected error: %v", resp.Diagnostics)
+	}
+
+	// Should still upload even though file didn't exist
+	if mock.UploadCalls != 1 {
+		t.Errorf("expected 1 upload call, got %d", mock.UploadCalls)
+	}
+}
+
+// TestFileResource_Update_FileExistsCheckError tests update when FileExists returns an error.
+func TestFileResource_Update_FileExistsCheckError(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "source.txt")
+	if err := os.WriteFile(sourceFile, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := NewMockSSHClient()
+	// File exists but GetFileHash fails, and FileExists also fails
+	mock.GetHashError = errors.New("hash failed")
+	mock.ExistsError = errors.New("permission denied")
+	r := &FileResource{
+		sshClientFactory: MockSSHClientFactory(mock),
+	}
+
+	data := FileResourceModel{
+		Source:      types.StringValue(sourceFile),
+		Destination: types.StringValue("/remote/test.txt"),
+		Host:        types.StringValue("192.168.1.100"),
+		SSHPort:     types.Int64Value(22),
+		SSHUser:     types.StringValue("root"),
+		ID:          types.StringValue("192.168.1.100:/remote/test.txt"),
+		SourceHash:  types.StringValue("sha256:abc123"),
+	}
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	planVal := buildTerraformValue(t, schemaResp.Schema, data)
+	stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+
+	req := resource.UpdateRequest{
+		Plan: tfsdk.Plan{
+			Schema: schemaResp.Schema,
+			Raw:    planVal,
+		},
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	resp := &resource.UpdateResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(context.Background()), nil),
+		},
+	}
+
+	r.Update(context.Background(), req, resp)
+
+	// Should error because we can't verify remote state
+	if !resp.Diagnostics.HasError() {
+		t.Error("Update() expected error for file exists check failure")
+	}
+}
+
+// TestFileResource_Update_FileExistsButCantRead tests update when file exists but can't be read.
+func TestFileResource_Update_FileExistsButCantRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "source.txt")
+	if err := os.WriteFile(sourceFile, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := NewMockSSHClient()
+	// GetFileHash fails but file exists
+	mock.GetHashError = errors.New("permission denied reading file")
+	mock.ExistingFiles["/remote/test.txt"] = true
+	r := &FileResource{
+		sshClientFactory: MockSSHClientFactory(mock),
+	}
+
+	data := FileResourceModel{
+		Source:      types.StringValue(sourceFile),
+		Destination: types.StringValue("/remote/test.txt"),
+		Host:        types.StringValue("192.168.1.100"),
+		SSHPort:     types.Int64Value(22),
+		SSHUser:     types.StringValue("root"),
+		ID:          types.StringValue("192.168.1.100:/remote/test.txt"),
+		SourceHash:  types.StringValue("sha256:abc123"),
+	}
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	planVal := buildTerraformValue(t, schemaResp.Schema, data)
+	stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+
+	req := resource.UpdateRequest{
+		Plan: tfsdk.Plan{
+			Schema: schemaResp.Schema,
+			Raw:    planVal,
+		},
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	resp := &resource.UpdateResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(context.Background()), nil),
+		},
+	}
+
+	r.Update(context.Background(), req, resp)
+
+	// Should error because we can read the file but can't verify it
+	if !resp.Diagnostics.HasError() {
+		t.Error("Update() expected error for permission denied on read")
+	}
+}
+
+// TestFileResource_Update_SetAttributesError tests update when SetFileAttributes fails.
+func TestFileResource_Update_SetAttributesError(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "source.txt")
+	if err := os.WriteFile(sourceFile, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := NewMockSSHClient()
+	mock.FileHashes["/remote/test.txt"] = "sha256:abc123"
+	mock.ExistingFiles["/remote/test.txt"] = true
+	mock.SetAttributeError = errors.New("chown failed")
+	r := &FileResource{
+		sshClientFactory: MockSSHClientFactory(mock),
+	}
+
+	data := FileResourceModel{
+		Source:      types.StringValue(sourceFile),
+		Destination: types.StringValue("/remote/test.txt"),
+		Host:        types.StringValue("192.168.1.100"),
+		SSHPort:     types.Int64Value(22),
+		SSHUser:     types.StringValue("root"),
+		ID:          types.StringValue("192.168.1.100:/remote/test.txt"),
+		SourceHash:  types.StringValue("sha256:abc123"),
+		Owner:       types.StringValue("root"),
+	}
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	planVal := buildTerraformValue(t, schemaResp.Schema, data)
+	stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+
+	req := resource.UpdateRequest{
+		Plan: tfsdk.Plan{
+			Schema: schemaResp.Schema,
+			Raw:    planVal,
+		},
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    stateVal,
+		},
+	}
+
+	resp := &resource.UpdateResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(context.Background()), nil),
+		},
+	}
+
+	r.Update(context.Background(), req, resp)
+
+	// Should error because we can't set attributes
+	if !resp.Diagnostics.HasError() {
+		t.Error("Update() expected error for set attributes failure")
+	}
 }
 
 // TestSourceSizePlanModifier tests the sourceSizePlanModifier.

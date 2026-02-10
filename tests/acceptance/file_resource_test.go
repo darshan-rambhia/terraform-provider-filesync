@@ -570,6 +570,189 @@ func TestAccFileResource_ConnectionPoolingUpdate(t *testing.T) {
 	})
 }
 
+// TestAccFileResource_CheckRemoteOnPlan tests the check_remote_on_plan feature.
+// When enabled, the provider connects to the remote host during plan/refresh
+// to detect if the remote file has drifted from the expected state.
+func TestAccFileResource_CheckRemoteOnPlan(t *testing.T) {
+	t.Parallel()
+
+	container := SetupSSHContainer(t)
+	cfg := NewTestSSHConfig(container)
+
+	sourceFile := CreateTestSourceFile(t, "original content for drift test\n")
+	remotePath := "/tmp/test-check-remote-on-plan.txt"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Create file with check_remote_on_plan enabled.
+			{
+				Config: cfg.FileResourceConfigWithCheckRemoteOnPlan("test", sourceFile, remotePath, "0644"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					CheckRemoteFileExists(container, remotePath),
+					CheckRemoteFileContent(container, remotePath, "original content for drift test\n"),
+					resource.TestCheckResourceAttr("filesync_file.test", "check_remote_on_plan", "true"),
+				),
+			},
+			// Step 2: Run refresh without external changes - should succeed without warnings.
+			{
+				Config: cfg.FileResourceConfigWithCheckRemoteOnPlan("test", sourceFile, remotePath, "0644"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					CheckRemoteFileExists(container, remotePath),
+					CheckRemoteFileContent(container, remotePath, "original content for drift test\n"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccFileResource_CheckRemoteOnPlanDriftDetected tests that check_remote_on_plan
+// properly detects when the remote file has been modified externally.
+func TestAccFileResource_CheckRemoteOnPlanDriftDetected(t *testing.T) {
+	t.Parallel()
+
+	container := SetupSSHContainer(t)
+	cfg := NewTestSSHConfig(container)
+
+	sourceFile := CreateTestSourceFile(t, "original content\n")
+	remotePath := "/tmp/test-check-remote-drift.txt"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Create the file.
+			{
+				Config: cfg.FileResourceConfigWithCheckRemoteOnPlan("test", sourceFile, remotePath, "0644"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					CheckRemoteFileExists(container, remotePath),
+				),
+			},
+			// Step 2: Externally modify the remote file, then run plan.
+			// The drift should be detected during refresh (which triggers checkRemoteDrift).
+			// Note: This may show a warning but won't fail the apply since we also change local.
+			{
+				PreConfig: func() {
+					// Simulate external modification.
+					_, err := container.runCommand(fmt.Sprintf("echo 'externally modified' > %s", remotePath))
+					if err != nil {
+						t.Fatalf("failed to externally modify file: %v", err)
+					}
+					// Also modify local to trigger update.
+					if err := os.WriteFile(sourceFile, []byte("new local content\n"), 0644); err != nil {
+						t.Fatalf("failed to modify local file: %v", err)
+					}
+				},
+				Config: cfg.FileResourceConfigWithCheckRemoteOnPlan("test", sourceFile, remotePath, "0644"),
+				// With drift detection enabled, the update detects drift and fails.
+				ExpectError: regexp.MustCompile(`Remote file drift detected|Cannot read remote file`),
+			},
+		},
+	})
+}
+
+// TestAccFileResource_ImportSyncsLocal tests the import_syncs_local feature.
+// When enabled with an existing (empty) local file, the provider syncs the remote
+// content to the local file during the post-import apply.
+//
+// Note: Due to Terraform's execution order (plan modifiers run before Read can sync),
+// the local file must exist before import. The import_syncs_local feature is designed
+// to help when the local file exists but may be out of sync with remote.
+//
+// Recommended workflow for importing existing remote files:
+// 1. Create an empty local file: touch /path/to/source.txt
+// 2. Run: terraform import filesync_file.myfile host:/remote/path.txt
+// 3. Run: terraform apply (this syncs remote content to local)
+func TestAccFileResource_ImportSyncsLocal(t *testing.T) {
+	t.Parallel()
+
+	container := SetupSSHContainer(t)
+	cfg := NewTestSSHConfig(container)
+
+	// Create the remote file directly on the container (simulating pre-existing file).
+	remotePath := "/tmp/test-import-syncs-local.txt"
+	remoteContent := "content created on remote server"
+	_, err := container.runCommand(fmt.Sprintf("echo -n '%s' > %s", remoteContent, remotePath))
+	if err != nil {
+		t.Fatalf("failed to create remote file: %v", err)
+	}
+
+	// Create an EMPTY local file - this simulates the recommended workflow where
+	// users create an empty placeholder before import.
+	localSourceFile := CreateTestSourceFile(t, "")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Import the existing remote file.
+			// Local file exists (empty) so plan modifier can hash it.
+			{
+				Config:            cfg.FileResourceConfigWithImportSyncsLocal("test", localSourceFile, remotePath, "0644"),
+				ResourceName:      "filesync_file.test",
+				ImportState:       true,
+				ImportStateId:     fmt.Sprintf("%s:%s", container.Host, remotePath),
+				ImportStateVerify: false, // Hash will differ since local is empty
+			},
+			// Step 2: Apply the config.
+			// Since local hash differs from remote, update will be triggered.
+			// With import_syncs_local, the local content should match remote after.
+			{
+				Config: cfg.FileResourceConfigWithImportSyncsLocal("test", localSourceFile, remotePath, "0644"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					CheckLocalFileExists(localSourceFile),
+					CheckRemoteFileExists(container, remotePath),
+					// Remote should have the local content now (local wins in terraform model)
+					resource.TestCheckResourceAttrSet("filesync_file.test", "source_hash"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccFileResource_ImportSyncsLocalWithExistingLocal tests that import_syncs_local
+// doesn't overwrite an existing local file.
+func TestAccFileResource_ImportSyncsLocalWithExistingLocal(t *testing.T) {
+	t.Parallel()
+
+	container := SetupSSHContainer(t)
+	cfg := NewTestSSHConfig(container)
+
+	// Create the remote file.
+	remotePath := "/tmp/test-import-syncs-existing.txt"
+	remoteContent := "remote content\n"
+	_, err := container.runCommand(fmt.Sprintf("echo -n %q > %s", remoteContent, remotePath))
+	if err != nil {
+		t.Fatalf("failed to create remote file: %v", err)
+	}
+
+	// Create a local file that already exists.
+	localSourceFile := CreateTestSourceFile(t, "existing local content\n")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Import with import_syncs_local=true but local file exists.
+			// The local file should NOT be overwritten.
+			{
+				Config: cfg.FileResourceConfigWithImportSyncsLocal("test", localSourceFile, remotePath, "0644"),
+				ResourceName:  "filesync_file.test",
+				ImportState:   true,
+				ImportStateId: fmt.Sprintf("%s:%s", container.Host, remotePath),
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					// Verify local file still has original content.
+					content, err := os.ReadFile(localSourceFile)
+					if err != nil {
+						return fmt.Errorf("failed to read local file: %v", err)
+					}
+					if string(content) != "existing local content\n" {
+						return fmt.Errorf("local file was overwritten: got %q", string(content))
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
 // TestAccFileResource_LocalFileChangeDetection is a regression test for the bug where
 // modifying the local source file didn't trigger an update because Read was incorrectly
 // updating source_hash in state. This test explicitly verifies that:

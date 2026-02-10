@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/darshan-rambhia/gosftp"
@@ -18,7 +19,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -83,6 +83,11 @@ type FileResourceModel struct {
 	Group types.String `tfsdk:"group"`
 	Mode  types.String `tfsdk:"mode"`
 
+	// Optional - sync behavior.
+	CheckRemoteOnPlan types.Bool `tfsdk:"check_remote_on_plan"`
+	ImportSyncsLocal  types.Bool `tfsdk:"import_syncs_local"`
+	HostAgnosticID    types.Bool `tfsdk:"host_agnostic_id"`
+
 	// Computed.
 	ID         types.String `tfsdk:"id"`
 	SourceHash types.String `tfsdk:"source_hash"`
@@ -101,6 +106,7 @@ Manages a single file on a remote host via SSH/SFTP.
 ## Behavior
 
 - **Plan**: Compares local file hash against state. Shows change if local file modified.
+  - If ` + "`check_remote_on_plan = true`" + `, also connects to remote to detect drift early.
 - **Apply**:
   1. Connects to remote host via SSH
   2. Checks remote file hash against state (drift detection)
@@ -123,9 +129,46 @@ Error: Remote file drift detected
   Found (on remote):     sha256:def456...
 
   To resolve:
-    - terraform refresh   # Accept remote as source of truth
+    - terraform import with import_syncs_local=true  # Accept remote as source of truth
     - terraform apply -replace=filesync_file.config  # Force overwrite
 ` + "```" + `
+
+### Early Drift Detection (check_remote_on_plan)
+
+Set ` + "`check_remote_on_plan = true`" + ` to detect drift during ` + "`terraform plan`" + `:
+
+` + "```hcl" + `
+resource "filesync_file" "config" {
+  source      = "./config.json"
+  destination = "/app/config.json"
+  host        = "192.168.1.100"
+
+  check_remote_on_plan = true  # Warn about drift during plan
+}
+` + "```" + `
+
+This adds latency to planning (requires SSH connection) but provides early warning.
+
+## Importing Existing Remote Files
+
+Use ` + "`import_syncs_local = true`" + ` to download remote file content to local path during import:
+
+` + "```hcl" + `
+resource "filesync_file" "workflow" {
+  source      = "./workflows/my-workflow.json"
+  destination = "/app/workflow.json"
+  host        = "192.168.1.100"
+
+  import_syncs_local = true  # Download remote to local on import
+}
+` + "```" + `
+
+Then import:
+` + "```bash" + `
+terraform import filesync_file.workflow "192.168.1.100:/app/workflow.json"
+` + "```" + `
+
+The remote file content will be written to ` + "`./workflows/my-workflow.json`" + `.
 
 ## Example Usage
 
@@ -249,19 +292,19 @@ resource "filesync_file" "nginx_config" {
 
 			// Optional - file attributes.
 			"owner": schema.StringAttribute{
-				MarkdownDescription: "File owner on remote. Defaults to the SSH user.",
+				MarkdownDescription: "File owner on remote. If not set, no ownership change is made (file is owned by the SSH user). Set explicitly to change ownership (requires appropriate permissions).",
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString("root"),
+				Default:             stringdefault.StaticString(""),
 				Validators: []validator.String{
 					UnixOwner(),
 				},
 			},
 			"group": schema.StringAttribute{
-				MarkdownDescription: "File group on remote. Defaults to the SSH user's primary group.",
+				MarkdownDescription: "File group on remote. If not set, no group change is made. Set explicitly to change group (requires appropriate permissions).",
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString("root"),
+				Default:             stringdefault.StaticString(""),
 				Validators: []validator.String{
 					UnixGroup(),
 				},
@@ -276,12 +319,33 @@ resource "filesync_file" "nginx_config" {
 				},
 			},
 
+			// Optional - sync behavior.
+			"check_remote_on_plan": schema.BoolAttribute{
+				MarkdownDescription: "If true, connects to the remote host during plan to detect drift. " +
+					"This adds latency to planning but provides early warning if remote files were modified outside Terraform. " +
+					"When drift is detected, a warning is shown in the plan output. Defaults to false.",
+				Optional: true,
+			},
+			"import_syncs_local": schema.BoolAttribute{
+				MarkdownDescription: "If true, when importing an existing remote file, the remote content is written to the local source path. " +
+					"This allows you to import a remote file and have the local file created/updated to match. " +
+					"The source attribute must still be set in the config to specify where to write the file. Defaults to false.",
+				Optional: true,
+			},
+			"host_agnostic_id": schema.BoolAttribute{
+				MarkdownDescription: "If true, the resource ID uses only the destination path (not host:destination). " +
+					"This allows the host to change (e.g., switching between network paths to the same machine) " +
+					"without causing resource identity conflicts. Defaults to false for backwards compatibility.",
+				Optional: true,
+			},
+
 			// Computed.
 			"id": schema.StringAttribute{
-				MarkdownDescription: "Resource identifier (host:destination).",
-				Computed:            true,
+				MarkdownDescription: "Resource identifier. Format depends on host_agnostic_id: " +
+					"when false (default), ID is `host:destination`; when true, ID is just `destination`.",
+				Computed: true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
+					idPlanModifier{},
 				},
 			},
 			"source_hash": schema.StringAttribute{
@@ -380,7 +444,7 @@ func (r *FileResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 
 	// Set computed values.
-	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.Host.ValueString(), data.Destination.ValueString()))
+	data.ID = types.StringValue(computeResourceID(data))
 	data.SourceHash = types.StringValue(hash)
 	data.Size = types.Int64Value(size)
 
@@ -422,13 +486,97 @@ func (r *FileResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
+	// Check if this is a post-import situation where we need to sync local from remote.
+	// Conditions:
+	// 1. import_syncs_local is true
+	// 2. source_hash is empty/null (indicates fresh import or never synced)
+	// 3. Local file doesn't exist OR differs from what we expect
+	localFileExists := true
 	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		localFileExists = false
+	}
+
+	shouldSyncFromRemote := !data.ImportSyncsLocal.IsNull() &&
+		data.ImportSyncsLocal.ValueBool() &&
+		(data.SourceHash.IsNull() || data.SourceHash.ValueString() == "") &&
+		!localFileExists
+
+	if shouldSyncFromRemote {
+		tflog.Info(ctx, "Post-import sync: downloading remote file to local source path")
+		if err := r.syncLocalFromRemote(ctx, &data); err != nil {
+			resp.Diagnostics.AddError(
+				"Failed to sync local file from remote",
+				fmt.Sprintf("import_syncs_local is enabled but sync failed: %v", err),
+			)
+			return
+		}
+
+		// After syncing, compute the hash of the now-local file and update state.
+		hash, size, err := hashFile(sourcePath)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Failed to compute hash after sync",
+				fmt.Sprintf("Could not hash synced file %s: %v", sourcePath, err),
+			)
+			return
+		}
+
+		data.SourceHash = types.StringValue(hash)
+		data.Size = types.Int64Value(size)
+
+		tflog.Info(ctx, "Successfully synced local file and updated state", map[string]interface{}{
+			"source": sourcePath,
+			"hash":   hash,
+			"size":   size,
+		})
+
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		return
+	}
+
+	if !localFileExists {
 		tflog.Info(ctx, "Source file no longer exists, removing resource from state", map[string]interface{}{
 			"source": sourcePath,
 		})
 		// Source file was deleted - remove from state.
 		resp.State.RemoveResource(ctx)
 		return
+	}
+
+	// Check for remote drift if check_remote_on_plan is enabled.
+	hasDrift, remoteHash, err := r.checkRemoteDrift(ctx, &data)
+	if err != nil {
+		// Add warning but don't fail - drift check is informational.
+		resp.Diagnostics.AddWarning(
+			"Remote drift check failed",
+			fmt.Sprintf("Could not check remote file for drift: %v\n\n"+
+				"This may indicate connectivity issues. The apply will still check for drift.", err),
+		)
+	} else if hasDrift {
+		if remoteHash == "" {
+			resp.Diagnostics.AddWarning(
+				"Remote file missing",
+				fmt.Sprintf("Remote file %s does not exist but is expected.\n\n"+
+					"The file may have been deleted outside of Terraform.\n"+
+					"Run 'terraform apply' to recreate the file.",
+					data.Destination.ValueString()),
+			)
+		} else {
+			resp.Diagnostics.AddWarning(
+				"Remote file drift detected",
+				fmt.Sprintf("Remote file %s has been modified outside of Terraform.\n\n"+
+					"  Expected (from state): %s\n"+
+					"  Found (on remote):     %s\n\n"+
+					"To resolve:\n"+
+					"  - Run 'terraform apply' to overwrite remote with local (will fail with drift error)\n"+
+					"  - Run 'terraform apply -replace=%s' to force overwrite\n"+
+					"  - Run 'terraform import' with import_syncs_local=true to accept remote changes",
+					data.Destination.ValueString(),
+					data.SourceHash.ValueString(),
+					remoteHash,
+					fmt.Sprintf("filesync_file.%s", data.ID.ValueString())),
+			)
+		}
 	}
 
 	tflog.Debug(ctx, "File resource state preserved")
@@ -558,7 +706,7 @@ func (r *FileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	// Update computed values.
-	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.Host.ValueString(), data.Destination.ValueString()))
+	data.ID = types.StringValue(computeResourceID(data))
 	data.SourceHash = types.StringValue(newHash)
 	data.Size = types.Int64Value(size)
 
@@ -612,6 +760,9 @@ func (r *FileResource) ImportState(ctx context.Context, req resource.ImportState
 	// - source (required): path to the local source file
 	// - ssh_key_path or ssh_private_key (required): SSH credentials
 	//
+	// If import_syncs_local=true in the config, the remote file content will be
+	// written to the source path during the first Read after import.
+	//
 	// Then run `terraform apply` to sync state with the config.
 
 	id := req.ID
@@ -619,38 +770,112 @@ func (r *FileResource) ImportState(ctx context.Context, req resource.ImportState
 		"import_id": id,
 	})
 
-	// Parse the import ID - format is "host:destination".
-	// The destination is an absolute path, so we split on the first ":".
-	colonIdx := strings.Index(id, ":")
-	if colonIdx == -1 || colonIdx == 0 || colonIdx == len(id)-1 {
-		resp.Diagnostics.AddError(
-			"Invalid Import ID",
-			fmt.Sprintf(
-				"Import ID must be in format 'host:destination' (e.g., '192.168.1.100:/etc/myapp/config.json').\n"+
-					"Got: %s", id,
-			),
-		)
-		return
+	// Parse the import ID.
+	// Two formats supported:
+	//   - "host:destination" (default, e.g. "192.168.1.100:/etc/myapp/config.json")
+	//   - "/destination" (host_agnostic_id mode, e.g. "/etc/myapp/config.json")
+	//
+	// If the ID starts with "/", it's a host-agnostic import (destination only).
+	// Otherwise, split on the first ":" to get host and destination.
+	if strings.HasPrefix(id, "/") {
+		// Host-agnostic mode: ID is just the absolute destination path.
+		// The host must be provided in the resource config.
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("destination"), id)...)
+	} else {
+		colonIdx := strings.Index(id, ":")
+		if colonIdx == -1 || colonIdx == 0 || colonIdx == len(id)-1 {
+			resp.Diagnostics.AddError(
+				"Invalid Import ID",
+				fmt.Sprintf(
+					"Import ID must be either 'host:destination' (e.g., '192.168.1.100:/etc/myapp/config.json') "+
+						"or an absolute path '/destination' for host_agnostic_id mode.\n"+
+						"Got: %s", id,
+				),
+			)
+			return
+		}
+
+		host := id[:colonIdx]
+		destination := id[colonIdx+1:]
+
+		// Validate destination is an absolute path.
+		if !strings.HasPrefix(destination, "/") {
+			resp.Diagnostics.AddError(
+				"Invalid Import ID",
+				fmt.Sprintf(
+					"Destination must be an absolute path starting with '/'.\n"+
+						"Got: %s", destination,
+				),
+			)
+			return
+		}
+
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("host"), host)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("destination"), destination)...)
+	}
+}
+
+// syncLocalFromRemote downloads the remote file content to the local source path.
+// This is called during Read when import_syncs_local=true and the local file
+// doesn't exist or differs from remote.
+func (r *FileResource) syncLocalFromRemote(ctx context.Context, data *FileResourceModel) error {
+	sourcePath := data.Source.ValueString()
+	if sourcePath == "" {
+		return fmt.Errorf("source path is not set - add 'source' attribute to your config")
 	}
 
-	host := id[:colonIdx]
-	destination := id[colonIdx+1:]
+	tflog.Info(ctx, "Syncing local file from remote (import_syncs_local=true)", map[string]interface{}{
+		"source":      sourcePath,
+		"destination": data.Destination.ValueString(),
+	})
 
-	// Validate destination is an absolute path.
-	if !strings.HasPrefix(destination, "/") {
-		resp.Diagnostics.AddError(
-			"Invalid Import ID",
-			fmt.Sprintf(
-				"Destination must be an absolute path starting with '/'.\n"+
-					"Got: %s", destination,
-			),
-		)
-		return
+	// Create SSH client.
+	client, err := r.createSSHClient(data)
+	if err != nil {
+		return fmt.Errorf("failed to create SSH connection: %w", err)
+	}
+	defer r.releaseSSHClient(data, client)
+
+	// Check if remote file exists.
+	exists, err := client.FileExists(ctx, data.Destination.ValueString())
+	if err != nil {
+		return fmt.Errorf("failed to check if remote file exists: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("remote file %s does not exist", data.Destination.ValueString())
 	}
 
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("host"), host)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("destination"), destination)...)
+	// Read remote file content.
+	content, err := client.ReadFileContent(ctx, data.Destination.ValueString(), 0) // 0 = no limit
+	if err != nil {
+		return fmt.Errorf("failed to read remote file content: %w", err)
+	}
+
+	// Create parent directories if needed.
+	dir := filepath.Dir(sourcePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create parent directory %s: %w", dir, err)
+	}
+
+	// Write content to local file atomically (write to temp, then rename).
+	tmpPath := sourcePath + ".tmp"
+	if err := os.WriteFile(tmpPath, content, 0644); err != nil {
+		return fmt.Errorf("failed to write temporary file %s: %w", tmpPath, err)
+	}
+
+	if err := os.Rename(tmpPath, sourcePath); err != nil {
+		os.Remove(tmpPath) // Clean up temp file on error.
+		return fmt.Errorf("failed to rename temporary file to %s: %w", sourcePath, err)
+	}
+
+	tflog.Info(ctx, "Successfully synced local file from remote", map[string]interface{}{
+		"source": sourcePath,
+		"size":   len(content),
+	})
+
+	return nil
 }
 
 // Helper functions.
@@ -710,6 +935,65 @@ func (r *FileResource) releaseSSHClient(data *FileResourceModel, client gosftp.C
 	}
 }
 
+// computeResourceID returns the resource ID based on the host_agnostic_id flag.
+// When host_agnostic_id is true, returns just the destination path.
+// When false (default), returns host:destination for backwards compatibility.
+func computeResourceID(data FileResourceModel) string {
+	if !data.HostAgnosticID.IsNull() && data.HostAgnosticID.ValueBool() {
+		return data.Destination.ValueString()
+	}
+	return fmt.Sprintf("%s:%s", data.Host.ValueString(), data.Destination.ValueString())
+}
+
+// idPlanModifier computes the resource ID during planning.
+// This ensures the planned ID matches what Create/Update will produce,
+// avoiding "inconsistent result after apply" errors when host changes.
+type idPlanModifier struct{}
+
+func (m idPlanModifier) Description(_ context.Context) string {
+	return "Computes resource ID from host and destination, respecting host_agnostic_id flag."
+}
+
+func (m idPlanModifier) MarkdownDescription(_ context.Context) string {
+	return "Computes resource ID from host and destination, respecting host_agnostic_id flag."
+}
+
+func (m idPlanModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	// If resource is being destroyed, don't compute ID.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	// Get host and destination from the plan.
+	var host types.String
+	var destination types.String
+	var hostAgnosticID types.Bool
+
+	diags := req.Plan.GetAttribute(ctx, path.Root("host"), &host)
+	resp.Diagnostics.Append(diags...)
+	diags = req.Plan.GetAttribute(ctx, path.Root("destination"), &destination)
+	resp.Diagnostics.Append(diags...)
+	diags = req.Plan.GetAttribute(ctx, path.Root("host_agnostic_id"), &hostAgnosticID)
+	resp.Diagnostics.Append(diags...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// If either value is unknown, we can't compute the ID yet.
+	if host.IsUnknown() || destination.IsUnknown() {
+		resp.PlanValue = types.StringUnknown()
+		return
+	}
+
+	// Compute the ID based on the flag.
+	if !hostAgnosticID.IsNull() && hostAgnosticID.ValueBool() {
+		resp.PlanValue = types.StringValue(destination.ValueString())
+	} else {
+		resp.PlanValue = types.StringValue(fmt.Sprintf("%s:%s", host.ValueString(), destination.ValueString()))
+	}
+}
+
 func hashFile(path string) (string, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -755,8 +1039,23 @@ func (m sourceHashPlanModifier) PlanModifyString(ctx context.Context, req planmo
 	// Compute hash of the current local file.
 	hash, _, err := hashFile(sourcePath.ValueString())
 	if err != nil {
-		// File doesn't exist or can't be read - let Create/Update handle the error.
-		// Use unknown value to indicate we can't compute it.
+		// File doesn't exist or can't be read.
+		// Check if import_syncs_local is enabled - if so, and state hash is empty,
+		// this indicates a post-import scenario where Read will sync the file.
+		var importSyncsLocal types.Bool
+		diags := req.Plan.GetAttribute(ctx, path.Root("import_syncs_local"), &importSyncsLocal)
+		if !diags.HasError() && !importSyncsLocal.IsNull() && importSyncsLocal.ValueBool() {
+			// Check if state hash is empty (indicates fresh import).
+			if req.StateValue.IsNull() || req.StateValue.ValueString() == "" {
+				// Use empty string to match state - Read will sync the file from remote.
+				tflog.Debug(ctx, "import_syncs_local enabled with empty state hash, will sync from remote during Read")
+				resp.PlanValue = types.StringValue("")
+				return
+			}
+		}
+
+		// Otherwise, use unknown value to indicate we can't compute it.
+		// This will let Create/Update handle the error.
 		resp.PlanValue = types.StringUnknown()
 		return
 	}
@@ -764,6 +1063,61 @@ func (m sourceHashPlanModifier) PlanModifyString(ctx context.Context, req planmo
 	// Set the planned value to the current local file hash.
 	// If this differs from state, Terraform will trigger an update.
 	resp.PlanValue = types.StringValue(hash)
+}
+
+// remoteDriftChecker is used to check for remote drift during the Read phase.
+// This is called when check_remote_on_plan is true.
+// Note: We can't check during plan modifiers because they don't have access to
+// provider config (SSH credentials). Instead, we check during Read which runs
+// as part of refresh during plan.
+func (r *FileResource) checkRemoteDrift(ctx context.Context, data *FileResourceModel) (hasDrift bool, remoteHash string, err error) {
+	// Skip if check_remote_on_plan is not enabled.
+	if data.CheckRemoteOnPlan.IsNull() || !data.CheckRemoteOnPlan.ValueBool() {
+		return false, "", nil
+	}
+
+	// Skip if we don't have state hash to compare against.
+	if data.SourceHash.IsNull() || data.SourceHash.IsUnknown() {
+		return false, "", nil
+	}
+
+	tflog.Debug(ctx, "Checking remote for drift (check_remote_on_plan=true)")
+
+	// Create SSH client.
+	client, err := r.createSSHClient(data)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to create SSH connection for drift check: %w", err)
+	}
+	defer r.releaseSSHClient(data, client)
+
+	// Check if file exists.
+	exists, err := client.FileExists(ctx, data.Destination.ValueString())
+	if err != nil {
+		return false, "", fmt.Errorf("failed to check if remote file exists: %w", err)
+	}
+	if !exists {
+		// File doesn't exist on remote - this is drift (file was deleted).
+		return true, "", nil
+	}
+
+	// Get remote file hash.
+	remoteHash, err = client.GetFileHash(ctx, data.Destination.ValueString())
+	if err != nil {
+		return false, "", fmt.Errorf("failed to get remote file hash: %w", err)
+	}
+
+	// Compare with state hash.
+	stateHash := data.SourceHash.ValueString()
+	if remoteHash != stateHash {
+		tflog.Warn(ctx, "Remote drift detected", map[string]interface{}{
+			"state_hash":  stateHash,
+			"remote_hash": remoteHash,
+		})
+		return true, remoteHash, nil
+	}
+
+	tflog.Debug(ctx, "No remote drift detected")
+	return false, remoteHash, nil
 }
 
 // sourceSizePlanModifier computes the source file size during planning.
