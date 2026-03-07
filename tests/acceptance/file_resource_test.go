@@ -661,7 +661,7 @@ func TestAccFileResource_CheckRemoteOnPlanDriftDetected(t *testing.T) {
 // Recommended workflow for importing existing remote files:
 // 1. Create an empty local file: touch /path/to/source.txt
 // 2. Run: terraform import filesync_file.myfile host:/remote/path.txt
-// 3. Run: terraform apply (this syncs remote content to local)
+// 3. Run: terraform apply (this syncs remote content to local).
 func TestAccFileResource_ImportSyncsLocal(t *testing.T) {
 	t.Parallel()
 
@@ -733,7 +733,7 @@ func TestAccFileResource_ImportSyncsLocalWithExistingLocal(t *testing.T) {
 			// Step 1: Import with import_syncs_local=true but local file exists.
 			// The local file should NOT be overwritten.
 			{
-				Config: cfg.FileResourceConfigWithImportSyncsLocal("test", localSourceFile, remotePath, "0644"),
+				Config:        cfg.FileResourceConfigWithImportSyncsLocal("test", localSourceFile, remotePath, "0644"),
 				ResourceName:  "filesync_file.test",
 				ImportState:   true,
 				ImportStateId: fmt.Sprintf("%s:%s", container.Host, remotePath),
