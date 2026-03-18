@@ -42,6 +42,9 @@ type FilesyncProviderModel struct {
 	BastionKeyPath  types.String `tfsdk:"bastion_key_path"`
 	BastionPassword types.String `tfsdk:"bastion_password"`
 
+	// SOCKS proxy for off-network access.
+	SocksProxy types.String `tfsdk:"socks_proxy"`
+
 	// Connection pooling.
 	ConnectionPoolEnabled types.Bool `tfsdk:"connection_pool_enabled"`
 
@@ -153,6 +156,10 @@ resource "filesync_file" "config" {
 				MarkdownDescription: "Default SSH password for bastion host (sensitive).",
 				Optional:            true,
 				Sensitive:           true,
+			},
+			"socks_proxy": schema.StringAttribute{
+				MarkdownDescription: "SOCKS5 proxy URL for SSH connections (e.g. `socks5://127.0.0.1:1080`). When set, all SSH connections are dialed through the proxy. Useful for accessing hosts through an SSH tunnel or VPN.",
+				Optional:            true,
 			},
 			"connection_pool_enabled": schema.BoolAttribute{
 				MarkdownDescription: "Enable SSH connection pooling for improved performance when managing multiple files on the same host. Connections are reused across resources and automatically cleaned up after 5 minutes of inactivity. Defaults to false.",

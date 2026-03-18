@@ -177,6 +177,11 @@ func BuildSSHConfig(data SSHConfigurable, providerConfig *FilesyncProviderModel)
 		config.StrictHostKeyChecking = gosftp.StrictHostKeyChecking(providerConfig.StrictHostKeyChecking.ValueString())
 	}
 
+	// SOCKS proxy (provider-level only).
+	if providerConfig != nil && !providerConfig.SocksProxy.IsNull() && providerConfig.SocksProxy.ValueString() != "" {
+		config.ProxyURL = providerConfig.SocksProxy.ValueString()
+	}
+
 	return config
 }
 
