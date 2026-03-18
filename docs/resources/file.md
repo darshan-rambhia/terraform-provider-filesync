@@ -5,7 +5,8 @@ subcategory: ""
 description: |-
   Manages a single file on a remote host via SSH/SFTP.
   Behavior
-  Plan: Compares local file hash against state. Shows change if local file modified.Apply:
+  Plan: Compares local file hash against state. Shows change if local file modified.
+  If check_remote_on_plan = true, also connects to remote to detect drift early.Apply:
   Connects to remote host via SSHChecks remote file hash against state (drift detection)If remote was modified externally, fails with error showing diffIf no drift, uploads new file contentSets ownership and permissionsUpdates state with new hash
   Drift Detection
   If someone modifies the remote file outside of Terraform, apply will fail:
@@ -19,9 +20,37 @@ description: |-
     Found (on remote):     sha256:def456...
   
     To resolve:
-      - terraform refresh   # Accept remote as source of truth
+      - terraform import with import_syncs_local=true  # Accept remote as source of truth
       - terraform apply -replace=filesync_file.config  # Force overwrite
   
+  Early Drift Detection (check_remote_on_plan)
+  Set check_remote_on_plan = true to detect drift during terraform plan:
+  
+  resource "filesync_file" "config" {
+    source      = "./config.json"
+    destination = "/app/config.json"
+    host        = "192.168.1.100"
+  
+    check_remote_on_plan = true  # Warn about drift during plan
+  }
+  
+  This adds latency to planning (requires SSH connection) but provides early warning.
+  Importing Existing Remote Files
+  Use import_syncs_local = true to download remote file content to local path during import:
+  
+  resource "filesync_file" "workflow" {
+    source      = "./workflows/my-workflow.json"
+    destination = "/app/workflow.json"
+    host        = "192.168.1.100"
+  
+    import_syncs_local = true  # Download remote to local on import
+  }
+  
+  Then import:
+  
+  terraform import filesync_file.workflow "192.168.1.100:/app/workflow.json"
+  
+  The remote file content will be written to ./workflows/my-workflow.json.
   Example Usage
   
   resource "filesync_file" "nginx_config" {
@@ -45,6 +74,7 @@ Manages a single file on a remote host via SSH/SFTP.
 ## Behavior
 
 - **Plan**: Compares local file hash against state. Shows change if local file modified.
+  - If `check_remote_on_plan = true`, also connects to remote to detect drift early.
 - **Apply**:
   1. Connects to remote host via SSH
   2. Checks remote file hash against state (drift detection)
@@ -67,9 +97,46 @@ Error: Remote file drift detected
   Found (on remote):     sha256:def456...
 
   To resolve:
-    - terraform refresh   # Accept remote as source of truth
+    - terraform import with import_syncs_local=true  # Accept remote as source of truth
     - terraform apply -replace=filesync_file.config  # Force overwrite
 ```
+
+### Early Drift Detection (check_remote_on_plan)
+
+Set `check_remote_on_plan = true` to detect drift during `terraform plan`:
+
+```hcl
+resource "filesync_file" "config" {
+  source      = "./config.json"
+  destination = "/app/config.json"
+  host        = "192.168.1.100"
+
+  check_remote_on_plan = true  # Warn about drift during plan
+}
+```
+
+This adds latency to planning (requires SSH connection) but provides early warning.
+
+## Importing Existing Remote Files
+
+Use `import_syncs_local = true` to download remote file content to local path during import:
+
+```hcl
+resource "filesync_file" "workflow" {
+  source      = "./workflows/my-workflow.json"
+  destination = "/app/workflow.json"
+  host        = "192.168.1.100"
+
+  import_syncs_local = true  # Download remote to local on import
+}
+```
+
+Then import:
+```bash
+terraform import filesync_file.workflow "192.168.1.100:/app/workflow.json"
+```
+
+The remote file content will be written to `./workflows/my-workflow.json`.
 
 ## Example Usage
 
@@ -107,11 +174,14 @@ resource "filesync_file" "nginx_config" {
 - `bastion_port` (Number) Bastion host SSH port. Defaults to 22.
 - `bastion_private_key` (String, Sensitive) SSH private key content for bastion host (sensitive). Falls back to ssh_private_key if not set.
 - `bastion_user` (String) SSH user for bastion host. Falls back to ssh_user if not set.
-- `group` (String) File group on remote. Defaults to the SSH user's primary group.
+- `check_remote_on_plan` (Boolean) If true, connects to the remote host during plan to detect drift. This adds latency to planning but provides early warning if remote files were modified outside Terraform. When drift is detected, a warning is shown in the plan output. Defaults to false.
+- `group` (String) File group on remote. If not set, no group change is made. Set explicitly to change group (requires appropriate permissions).
+- `host_agnostic_id` (Boolean) If true, the resource ID uses only the destination path (not host:destination). This allows the host to change (e.g., switching between network paths to the same machine) without causing resource identity conflicts. Defaults to false for backwards compatibility.
+- `import_syncs_local` (Boolean) If true, when importing an existing remote file, the remote content is written to the local source path. This allows you to import a remote file and have the local file created/updated to match. The source attribute must still be set in the config to specify where to write the file. Defaults to false.
 - `insecure_ignore_host_key` (Boolean) Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.
 - `known_hosts_file` (String) Path to a custom known_hosts file for SSH host key verification. Supports ~ expansion. If not set, uses the default ~/.ssh/known_hosts. Ignored if insecure_ignore_host_key is true.
 - `mode` (String) File permissions in octal notation (e.g., '0644' for rw-r--r--). Must be 3-4 digits. Defaults to '0644'.
-- `owner` (String) File owner on remote. Defaults to the SSH user.
+- `owner` (String) File owner on remote. If not set, no ownership change is made (file is owned by the SSH user). Set explicitly to change ownership (requires appropriate permissions).
 - `ssh_certificate` (String, Sensitive) SSH certificate content for certificate authentication. Used with ssh_private_key or ssh_key_path. Overrides provider default.
 - `ssh_certificate_path` (String) Path to SSH certificate file for certificate authentication. Used with ssh_private_key or ssh_key_path. Overrides provider default.
 - `ssh_key_path` (String) Path to SSH private key file. Mutually exclusive with ssh_private_key.
@@ -123,6 +193,6 @@ resource "filesync_file" "nginx_config" {
 
 ### Read-Only
 
-- `id` (String) Resource identifier (host:destination).
+- `id` (String) Resource identifier. Format depends on host_agnostic_id: when false (default), ID is `host:destination`; when true, ID is just `destination`.
 - `size` (Number) Size of the file in bytes.
 - `source_hash` (String) SHA256 hash of the source file in format `sha256:<hex>`. Updated when local file changes.

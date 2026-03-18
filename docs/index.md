@@ -62,6 +62,7 @@ resource "filesync_file" "config" {
 - `insecure_ignore_host_key` (Boolean) Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.
 - `known_hosts_file` (String) Path to a custom known_hosts file for SSH host key verification. Supports ~ expansion. If not set, uses the default ~/.ssh/known_hosts.
 - `max_retries` (Number) Maximum number of retry attempts for transient SSH failures (connection timeouts, network errors). Set to 0 to disable retries. Defaults to 3.
+- `socks_proxy` (String) SOCKS5 proxy URL for SSH connections (e.g. `socks5://127.0.0.1:1080`). When set, all SSH connections are dialed through the proxy. Useful for accessing hosts through an SSH tunnel or VPN.
 - `ssh_certificate` (String, Sensitive) Default SSH certificate content for certificate authentication. Used with ssh_private_key or ssh_key_path.
 - `ssh_certificate_path` (String) Default path to SSH certificate file for certificate authentication. Used with ssh_private_key or ssh_key_path.
 - `ssh_key_path` (String) Default path to SSH private key file. Mutually exclusive with ssh_private_key.

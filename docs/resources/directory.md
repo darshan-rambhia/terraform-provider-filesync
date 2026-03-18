@@ -85,11 +85,11 @@ resource "filesync_directory" "configs" {
 - `bastion_private_key` (String, Sensitive) SSH private key content for bastion host (sensitive). Falls back to ssh_private_key if not set. Overrides provider default.
 - `bastion_user` (String) SSH user for bastion host. Falls back to ssh_user if not set. Overrides provider default.
 - `exclude` (List of String) List of glob patterns to exclude from sync (e.g., `*.tmp`, `.git`, `.DS_Store`). Supports standard glob syntax with `*` and `?` wildcards.
-- `group` (String) File group on remote. Defaults to the SSH user's primary group.
+- `group` (String) File group on remote. If not set, no group change is made. Set explicitly to change group (requires appropriate permissions).
 - `insecure_ignore_host_key` (Boolean) Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.
 - `known_hosts_file` (String) Path to a custom known_hosts file for SSH host key verification. Supports ~ expansion. If not set, uses the default ~/.ssh/known_hosts. Ignored if insecure_ignore_host_key is true.
 - `mode` (String) File permissions in octal notation (e.g., '0644' for rw-r--r--) applied to all files. Must be 3-4 digits. Defaults to '0644'.
-- `owner` (String) File owner on remote. Defaults to the SSH user.
+- `owner` (String) File owner on remote. If not set, no ownership change is made (file is owned by the SSH user). Set explicitly to change ownership (requires appropriate permissions).
 - `parallel_uploads` (Number) Number of files to upload in parallel. Set to 1 for sequential uploads. Higher values improve performance but use more connections. Defaults to 4.
 - `ssh_certificate` (String, Sensitive) SSH certificate content for certificate authentication. Used with ssh_private_key or ssh_key_path. Overrides provider default.
 - `ssh_certificate_path` (String) Path to SSH certificate file for certificate authentication. Used with ssh_private_key or ssh_key_path. Overrides provider default.
