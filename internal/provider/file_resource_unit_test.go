@@ -1295,6 +1295,7 @@ func buildTerraformValue(t *testing.T, s schema.Schema, data FileResourceModel) 
 		"check_remote_on_plan":     tftypes.NewValue(tftypes.Bool, boolVal(data.CheckRemoteOnPlan)),
 		"import_syncs_local":       tftypes.NewValue(tftypes.Bool, boolVal(data.ImportSyncsLocal)),
 		"host_agnostic_id":         tftypes.NewValue(tftypes.Bool, boolVal(data.HostAgnosticID)),
+		"source_trigger":           tftypes.NewValue(tftypes.String, strVal(data.SourceTrigger)),
 		"source_hash":              tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
 		"size":                     tftypes.NewValue(tftypes.Number, intVal(data.Size)),
 	}

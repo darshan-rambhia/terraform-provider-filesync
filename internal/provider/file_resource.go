@@ -84,9 +84,10 @@ type FileResourceModel struct {
 	Mode  types.String `tfsdk:"mode"`
 
 	// Optional - sync behavior.
-	CheckRemoteOnPlan types.Bool `tfsdk:"check_remote_on_plan"`
-	ImportSyncsLocal  types.Bool `tfsdk:"import_syncs_local"`
-	HostAgnosticID    types.Bool `tfsdk:"host_agnostic_id"`
+	CheckRemoteOnPlan types.Bool   `tfsdk:"check_remote_on_plan"`
+	ImportSyncsLocal  types.Bool   `tfsdk:"import_syncs_local"`
+	HostAgnosticID    types.Bool   `tfsdk:"host_agnostic_id"`
+	SourceTrigger     types.String `tfsdk:"source_trigger"`
 
 	// Computed.
 	ID         types.String `tfsdk:"id"`
@@ -330,6 +331,12 @@ resource "filesync_file" "nginx_config" {
 				MarkdownDescription: "If true, when importing an existing remote file, the remote content is written to the local source path. " +
 					"This allows you to import a remote file and have the local file created/updated to match. " +
 					"The source attribute must still be set in the config to specify where to write the file. Defaults to false.",
+				Optional: true,
+			},
+			"source_trigger": schema.StringAttribute{
+				MarkdownDescription: "Optional external trigger value. When this changes between plans, forces re-sync on the next apply even if the local source file appears unchanged on disk at plan time. " +
+					"Use when the source file is produced by another resource in the same plan (e.g., `local_sensitive_file`) whose new content isn't yet on disk when this resource's plan modifier runs. " +
+					"Typically set to the producing resource's content checksum (e.g., `local_sensitive_file.example.content_sha256`).",
 				Optional: true,
 			},
 			"host_agnostic_id": schema.BoolAttribute{
@@ -1028,6 +1035,29 @@ func (m sourceHashPlanModifier) PlanModifyString(ctx context.Context, req planmo
 		return
 	}
 
+	// If source_trigger is set and differs from state, force an update by marking
+	// source_hash as Unknown. This handles the case where the source file is
+	// produced by another resource in the same plan (e.g., local_sensitive_file)
+	// whose new content isn't on disk yet at plan time — so hashing disk would
+	// return the stale hash and Terraform would skip the sync.
+	var planTrigger, stateTrigger types.String
+	if !req.Plan.Raw.IsNull() {
+		if diags := req.Plan.GetAttribute(ctx, path.Root("source_trigger"), &planTrigger); !diags.HasError() {
+			if !req.State.Raw.IsNull() {
+				_ = req.State.GetAttribute(ctx, path.Root("source_trigger"), &stateTrigger)
+			}
+			if !planTrigger.IsNull() && !planTrigger.IsUnknown() && !planTrigger.Equal(stateTrigger) {
+				tflog.Debug(ctx, "source_trigger changed, forcing source_hash recomputation at apply",
+					map[string]interface{}{
+						"state_trigger": stateTrigger.ValueString(),
+						"plan_trigger":  planTrigger.ValueString(),
+					})
+				resp.PlanValue = types.StringUnknown()
+				return
+			}
+		}
+	}
+
 	// Get the source path from the plan.
 	var sourcePath types.String
 	diags := req.Plan.GetAttribute(ctx, path.Root("source"), &sourcePath)
@@ -1135,6 +1165,19 @@ func (m sourceSizePlanModifier) PlanModifyInt64(ctx context.Context, req planmod
 	// If resource is being destroyed, don't compute size.
 	if req.Plan.Raw.IsNull() {
 		return
+	}
+
+	// If source_trigger is set and differs from state, size is unknown until apply.
+	// See sourceHashPlanModifier for rationale.
+	var planTrigger, stateTrigger types.String
+	if diags := req.Plan.GetAttribute(ctx, path.Root("source_trigger"), &planTrigger); !diags.HasError() {
+		if !req.State.Raw.IsNull() {
+			_ = req.State.GetAttribute(ctx, path.Root("source_trigger"), &stateTrigger)
+		}
+		if !planTrigger.IsNull() && !planTrigger.IsUnknown() && !planTrigger.Equal(stateTrigger) {
+			resp.PlanValue = types.Int64Unknown()
+			return
+		}
 	}
 
 	// Get the source path from the plan.
