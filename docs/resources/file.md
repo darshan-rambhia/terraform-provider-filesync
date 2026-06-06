@@ -181,6 +181,7 @@ resource "filesync_file" "nginx_config" {
 - `insecure_ignore_host_key` (Boolean) Skip SSH host key verification. WARNING: This is insecure and should only be used for testing or in trusted environments. Defaults to false.
 - `known_hosts_file` (String) Path to a custom known_hosts file for SSH host key verification. Supports ~ expansion. If not set, uses the default ~/.ssh/known_hosts. Ignored if insecure_ignore_host_key is true.
 - `mode` (String) File permissions in octal notation (e.g., '0644' for rw-r--r--). Must be 3-4 digits. Defaults to '0644'.
+- `overwrite_on_drift` (Boolean) If true, when the remote file was modified outside Terraform (drift), the apply overwrites the remote with the local source instead of failing with a drift error. This is non-destructive (the file is uploaded/overwritten in place, never deleted), making it a safe alternative to `-replace` for a 'local source is authoritative' (GitOps) workflow. A warning is still emitted noting the overwrite. Defaults to false (drift is a hard error).
 - `owner` (String) File owner on remote. If not set, no ownership change is made (file is owned by the SSH user). Set explicitly to change ownership (requires appropriate permissions).
 - `ssh_certificate` (String, Sensitive) SSH certificate content for certificate authentication. Used with ssh_private_key or ssh_key_path. Overrides provider default.
 - `ssh_certificate_path` (String) Path to SSH certificate file for certificate authentication. Used with ssh_private_key or ssh_key_path. Overrides provider default.

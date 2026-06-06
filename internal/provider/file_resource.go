@@ -88,6 +88,7 @@ type FileResourceModel struct {
 	ImportSyncsLocal  types.Bool   `tfsdk:"import_syncs_local"`
 	HostAgnosticID    types.Bool   `tfsdk:"host_agnostic_id"`
 	SourceTrigger     types.String `tfsdk:"source_trigger"`
+	OverwriteOnDrift  types.Bool   `tfsdk:"overwrite_on_drift"`
 
 	// Computed.
 	ID         types.String `tfsdk:"id"`
@@ -331,6 +332,14 @@ resource "filesync_file" "nginx_config" {
 				MarkdownDescription: "If true, when importing an existing remote file, the remote content is written to the local source path. " +
 					"This allows you to import a remote file and have the local file created/updated to match. " +
 					"The source attribute must still be set in the config to specify where to write the file. Defaults to false.",
+				Optional: true,
+			},
+			"overwrite_on_drift": schema.BoolAttribute{
+				MarkdownDescription: "If true, when the remote file was modified outside Terraform (drift), the apply " +
+					"overwrites the remote with the local source instead of failing with a drift error. " +
+					"This is non-destructive (the file is uploaded/overwritten in place, never deleted), making it " +
+					"a safe alternative to `-replace` for a 'local source is authoritative' (GitOps) workflow. " +
+					"A warning is still emitted noting the overwrite. Defaults to false (drift is a hard error).",
 				Optional: true,
 			},
 			"source_trigger": schema.StringAttribute{
@@ -673,16 +682,28 @@ func (r *FileResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			}
 		}
 
-		errorMsg := diff.FormatDriftError(
-			data.ID.ValueString(),
-			data.Destination.ValueString(),
-			state.SourceHash.ValueString(),
-			remoteHash,
-			diffContent,
-		)
+		if data.OverwriteOnDrift.ValueBool() {
+			// Non-destructive overwrite: local source is authoritative. The upload
+			// below overwrites the drifted remote file in place (never deletes it).
+			// Emit a warning so the drift is still visible in apply output.
+			resp.Diagnostics.AddWarning(
+				"Remote file drift overwritten",
+				fmt.Sprintf("Remote file %s was modified outside Terraform; overwriting with the local source "+
+					"because overwrite_on_drift = true.\n\n  Expected (state): %s\n  Found (remote):   %s",
+					data.Destination.ValueString(), state.SourceHash.ValueString(), remoteHash),
+			)
+		} else {
+			errorMsg := diff.FormatDriftError(
+				data.ID.ValueString(),
+				data.Destination.ValueString(),
+				state.SourceHash.ValueString(),
+				remoteHash,
+				diffContent,
+			)
 
-		resp.Diagnostics.AddError("Remote file drift detected", errorMsg)
-		return
+			resp.Diagnostics.AddError("Remote file drift detected", errorMsg)
+			return
+		}
 	} else {
 		tflog.Debug(ctx, "No remote drift detected")
 	}

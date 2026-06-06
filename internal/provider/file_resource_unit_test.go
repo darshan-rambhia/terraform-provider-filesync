@@ -1132,6 +1132,68 @@ func TestFileResource_Update_DriftDetected(t *testing.T) {
 	}
 }
 
+// TestFileResource_Update_OverwriteOnDrift tests that with overwrite_on_drift=true,
+// remote drift is overwritten (non-destructively) instead of erroring.
+func TestFileResource_Update_OverwriteOnDrift(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "source.txt")
+	if err := os.WriteFile(sourceFile, []byte("local content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := NewMockSSHClient()
+	// Remote has a different hash than state - drift.
+	mock.FileHashes["/remote/test.txt"] = "sha256:remotehash"
+	mock.FileContents["/remote/test.txt"] = []byte("remote modified content")
+	mock.ExistingFiles["/remote/test.txt"] = true
+	r := &FileResource{
+		sshClientFactory: MockSSHClientFactory(mock),
+	}
+
+	data := FileResourceModel{
+		Source:           types.StringValue(sourceFile),
+		Destination:      types.StringValue("/remote/test.txt"),
+		Host:             types.StringValue("192.168.1.100"),
+		SSHPort:          types.Int64Value(22),
+		SSHUser:          types.StringValue("root"),
+		ID:               types.StringValue("192.168.1.100:/remote/test.txt"),
+		SourceHash:       types.StringValue("sha256:expectedhash"), // Different from remote → drift
+		OverwriteOnDrift: types.BoolValue(true),
+	}
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	planVal := buildTerraformValue(t, schemaResp.Schema, data)
+	stateVal := buildTerraformValue(t, schemaResp.Schema, data)
+
+	req := resource.UpdateRequest{
+		Plan:  tfsdk.Plan{Schema: schemaResp.Schema, Raw: planVal},
+		State: tfsdk.State{Schema: schemaResp.Schema, Raw: stateVal},
+	}
+	resp := &resource.UpdateResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(context.Background()), nil),
+		},
+	}
+
+	r.Update(context.Background(), req, resp)
+
+	// Should NOT error - drift is overwritten instead.
+	if resp.Diagnostics.HasError() {
+		t.Errorf("Update() unexpected error with overwrite_on_drift=true: %v", resp.Diagnostics)
+	}
+	// Should still warn about the overwrite.
+	if resp.Diagnostics.WarningsCount() == 0 {
+		t.Error("Update() expected a drift-overwrite warning")
+	}
+	// Should have uploaded (overwritten) the file.
+	if mock.UploadCalls != 1 {
+		t.Errorf("expected 1 upload call (overwrite), got %d", mock.UploadCalls)
+	}
+}
+
 // TestFileResource_Update_SSHError tests update with SSH connection error.
 func TestFileResource_Update_SSHError(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -1296,6 +1358,7 @@ func buildTerraformValue(t *testing.T, s schema.Schema, data FileResourceModel) 
 		"import_syncs_local":       tftypes.NewValue(tftypes.Bool, boolVal(data.ImportSyncsLocal)),
 		"host_agnostic_id":         tftypes.NewValue(tftypes.Bool, boolVal(data.HostAgnosticID)),
 		"source_trigger":           tftypes.NewValue(tftypes.String, strVal(data.SourceTrigger)),
+		"overwrite_on_drift":       tftypes.NewValue(tftypes.Bool, boolVal(data.OverwriteOnDrift)),
 		"source_hash":              tftypes.NewValue(tftypes.String, strVal(data.SourceHash)),
 		"size":                     tftypes.NewValue(tftypes.Number, intVal(data.Size)),
 	}
