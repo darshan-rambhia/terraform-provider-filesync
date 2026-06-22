@@ -247,7 +247,7 @@ func createPoolContainer(t *testing.T, index int) (*SSHTestContainer, error) {
 	sshContainer := &SSHTestContainer{
 		Container:      container,
 		Host:           host,
-		Port:           mappedPort.Int(),
+		Port:           int(mappedPort.Num()),
 		User:           "testuser",
 		PrivateKey:     privateKey,
 		PrivateKeyPath: keyPath,
@@ -260,7 +260,7 @@ func createPoolContainer(t *testing.T, index int) (*SSHTestContainer, error) {
 		return nil, fmt.Errorf("SSH not ready: %w", err)
 	}
 
-	t.Logf("Created pool container %d at %s:%d", index, host, mappedPort.Int())
+	t.Logf("Created pool container %d at %s:%d", index, host, int(mappedPort.Num()))
 	return sshContainer, nil
 }
 
