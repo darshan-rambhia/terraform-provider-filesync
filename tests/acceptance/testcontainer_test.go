@@ -173,7 +173,7 @@ func createNewContainer(t *testing.T) *SSHTestContainer {
 	sshContainer := &SSHTestContainer{
 		Container:      container,
 		Host:           host,
-		Port:           mappedPort.Int(),
+		Port:           int(mappedPort.Num()),
 		User:           "testuser",
 		PrivateKey:     privateKey,
 		PrivateKeyPath: keyPath,
