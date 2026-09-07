@@ -1,6 +1,6 @@
 module github.com/darshan-rambhia/terraform-provider-filesync
 
-go 1.25.8
+go 1.26.0
 
 require (
 	github.com/darshan-rambhia/gosftp v0.3.0
@@ -13,7 +13,7 @@ require (
 	github.com/sergi/go-diff v1.4.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 )
 
 require (
