@@ -47,8 +47,8 @@ func GenerateUnifiedDiff(expected, actual []byte, filename string) string {
 func formatUnifiedDiff(diffs []diffmatchpatch.Diff, filename string, maxLines int) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("--- expected: %s\n", filename))
-	sb.WriteString(fmt.Sprintf("+++ actual: %s (remote)\n", filename))
+	fmt.Fprintf(&sb, "--- expected: %s\n", filename)
+	fmt.Fprintf(&sb, "+++ actual: %s (remote)\n", filename)
 
 	lineCount := 0
 	for _, diff := range diffs {
@@ -71,15 +71,15 @@ func formatUnifiedDiff(diffs []diffmatchpatch.Diff, filename string, maxLines in
 
 			switch diff.Type {
 			case diffmatchpatch.DiffDelete:
-				sb.WriteString(fmt.Sprintf("- %s\n", line))
+				fmt.Fprintf(&sb, "- %s\n", line)
 				lineCount++
 			case diffmatchpatch.DiffInsert:
-				sb.WriteString(fmt.Sprintf("+ %s\n", line))
+				fmt.Fprintf(&sb, "+ %s\n", line)
 				lineCount++
 			case diffmatchpatch.DiffEqual:
 				// Show some context lines around changes.
 				if i < 3 || i >= len(lines)-3 {
-					sb.WriteString(fmt.Sprintf("  %s\n", line))
+					fmt.Fprintf(&sb, "  %s\n", line)
 					lineCount++
 				} else if i == 3 {
 					sb.WriteString("  ...\n")
@@ -113,17 +113,17 @@ func FormatDriftError(resourceID, filePath, expectedHash, actualHash string, dif
 	var sb strings.Builder
 
 	sb.WriteString("The remote file was modified outside of Terraform.\n\n")
-	sb.WriteString(fmt.Sprintf("  Resource: %s\n", resourceID))
-	sb.WriteString(fmt.Sprintf("  File: %s\n\n", filePath))
-	sb.WriteString(fmt.Sprintf("  Expected (from state): %s\n", expectedHash))
-	sb.WriteString(fmt.Sprintf("  Found (on remote):     %s\n", actualHash))
+	fmt.Fprintf(&sb, "  Resource: %s\n", resourceID)
+	fmt.Fprintf(&sb, "  File: %s\n\n", filePath)
+	fmt.Fprintf(&sb, "  Expected (from state): %s\n", expectedHash)
+	fmt.Fprintf(&sb, "  Found (on remote):     %s\n", actualHash)
 
 	if diffContent != "" {
 		sb.WriteString("\n  Content diff:\n")
 		// Indent the diff.
 		for _, line := range strings.Split(diffContent, "\n") {
 			if line != "" {
-				sb.WriteString(fmt.Sprintf("    %s\n", line))
+				fmt.Fprintf(&sb, "    %s\n", line)
 			}
 		}
 	}
