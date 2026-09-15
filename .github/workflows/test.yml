@@ -37,7 +37,7 @@ jobs:
       - name: Run linters
         uses: golangci/golangci-lint-action@v9.3.0
         with:
-          version: v2.7.1
+          version: v2.13.2
 
   # Unit tests - fast, no Docker required, runs in parallel with build
   unit-test:
