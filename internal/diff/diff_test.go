@@ -305,8 +305,8 @@ func TestGenerateUnifiedDiff_Truncation(t *testing.T) {
 	// Create content with many different lines to trigger truncation.
 	var expected, actual strings.Builder
 	for i := 0; i < 100; i++ {
-		expected.WriteString(fmt.Sprintf("original line %d\n", i))
-		actual.WriteString(fmt.Sprintf("changed line %d\n", i))
+		fmt.Fprintf(&expected, "original line %d\n", i)
+		fmt.Fprintf(&actual, "changed line %d\n", i)
 	}
 
 	result := GenerateUnifiedDiff([]byte(expected.String()), []byte(actual.String()), "/test/file.txt")
@@ -327,16 +327,16 @@ func TestGenerateUnifiedDiff_ContextLines(t *testing.T) {
 
 	// Write many identical lines.
 	for i := 0; i < 20; i++ {
-		expected.WriteString(fmt.Sprintf("unchanged line %d\n", i))
-		actual.WriteString(fmt.Sprintf("unchanged line %d\n", i))
+		fmt.Fprintf(&expected, "unchanged line %d\n", i)
+		fmt.Fprintf(&actual, "unchanged line %d\n", i)
 	}
 	// Add a change.
 	expected.WriteString("this line is different\n")
 	actual.WriteString("this line was modified\n")
 	// More identical lines.
 	for i := 0; i < 20; i++ {
-		expected.WriteString(fmt.Sprintf("more unchanged line %d\n", i))
-		actual.WriteString(fmt.Sprintf("more unchanged line %d\n", i))
+		fmt.Fprintf(&expected, "more unchanged line %d\n", i)
+		fmt.Fprintf(&actual, "more unchanged line %d\n", i)
 	}
 
 	result := GenerateUnifiedDiff([]byte(expected.String()), []byte(actual.String()), "/test/file.txt")
@@ -362,8 +362,8 @@ func TestFormatUnifiedDiff_EllipsisContext(t *testing.T) {
 
 	// Middle lines (should be replaced with ...)
 	for i := 0; i < 10; i++ {
-		expected.WriteString(fmt.Sprintf("middle%d\n", i))
-		actual.WriteString(fmt.Sprintf("middle%d\n", i))
+		fmt.Fprintf(&expected, "middle%d\n", i)
+		fmt.Fprintf(&actual, "middle%d\n", i)
 	}
 
 	// Last 3 context lines (should show).
