@@ -2633,3 +2633,84 @@ func TestSourceSizePlanModifier(t *testing.T) {
 		}
 	})
 }
+
+// TestSourceTriggerDefersPlan covers source_trigger in the hash and size plan
+// modifiers. When the trigger is unknown at plan time (its producer, e.g. a
+// local_sensitive_file, is being created or replaced) or has changed, the
+// file on disk may be stale, so both values must stay unknown. Planning the
+// stale disk value instead makes the apply-time re-plan fail with
+// "Provider produced inconsistent final plan".
+func TestSourceTriggerDefersPlan(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "stale.json")
+	if err := os.WriteFile(testFile, []byte("stale content"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	objType := tftypes.Object{AttributeTypes: map[string]tftypes.Type{
+		"source":         tftypes.String,
+		"source_trigger": tftypes.String,
+		"source_hash":    tftypes.String,
+		"size":           tftypes.Number,
+	}}
+	s := schema.Schema{Attributes: map[string]schema.Attribute{
+		"source":         schema.StringAttribute{},
+		"source_trigger": schema.StringAttribute{Optional: true},
+		"source_hash":    schema.StringAttribute{Computed: true},
+		"size":           schema.Int64Attribute{Computed: true},
+	}}
+	obj := func(trigger interface{}) tftypes.Value {
+		return tftypes.NewValue(objType, map[string]tftypes.Value{
+			"source":         tftypes.NewValue(tftypes.String, testFile),
+			"source_trigger": tftypes.NewValue(tftypes.String, trigger),
+			"source_hash":    tftypes.NewValue(tftypes.String, nil),
+			"size":           tftypes.NewValue(tftypes.Number, nil),
+		})
+	}
+
+	tests := []struct {
+		name         string
+		planTrigger  interface{}
+		stateTrigger interface{}
+		noState      bool
+		wantUnknown  bool
+	}{
+		{name: "unknown trigger (producer replaced)", planTrigger: tftypes.UnknownValue, stateTrigger: "sha-old", wantUnknown: true},
+		{name: "unknown trigger on create", planTrigger: tftypes.UnknownValue, noState: true, wantUnknown: true},
+		{name: "changed trigger", planTrigger: "sha-new", stateTrigger: "sha-old", wantUnknown: true},
+		{name: "unchanged trigger hashes disk", planTrigger: "sha-old", stateTrigger: "sha-old", wantUnknown: false},
+		{name: "no trigger hashes disk", planTrigger: nil, stateTrigger: nil, wantUnknown: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := tfsdk.Plan{Raw: obj(tt.planTrigger), Schema: s}
+			state := tfsdk.State{Raw: tftypes.NewValue(objType, nil), Schema: s}
+			if !tt.noState {
+				state.Raw = obj(tt.stateTrigger)
+			}
+
+			hashResp := &planmodifier.StringResponse{}
+			sourceHashPlanModifier{}.PlanModifyString(context.Background(), planmodifier.StringRequest{
+				Plan: plan, State: state, PlanValue: types.StringUnknown(), StateValue: types.StringValue("sha256:old"),
+			}, hashResp)
+			if hashResp.Diagnostics.HasError() {
+				t.Fatalf("hash modifier error: %v", hashResp.Diagnostics)
+			}
+			if got := hashResp.PlanValue.IsUnknown(); got != tt.wantUnknown {
+				t.Errorf("source_hash unknown = %v, want %v (value %q)", got, tt.wantUnknown, hashResp.PlanValue.ValueString())
+			}
+
+			sizeResp := &planmodifier.Int64Response{}
+			sourceSizePlanModifier{}.PlanModifyInt64(context.Background(), planmodifier.Int64Request{
+				Plan: plan, State: state, PlanValue: types.Int64Unknown(), StateValue: types.Int64Value(1),
+			}, sizeResp)
+			if sizeResp.Diagnostics.HasError() {
+				t.Fatalf("size modifier error: %v", sizeResp.Diagnostics)
+			}
+			if got := sizeResp.PlanValue.IsUnknown(); got != tt.wantUnknown {
+				t.Errorf("size unknown = %v, want %v", got, tt.wantUnknown)
+			}
+		})
+	}
+}

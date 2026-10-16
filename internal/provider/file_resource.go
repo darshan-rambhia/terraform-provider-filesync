@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
@@ -343,7 +344,7 @@ resource "filesync_file" "nginx_config" {
 				Optional: true,
 			},
 			"source_trigger": schema.StringAttribute{
-				MarkdownDescription: "Optional external trigger value. When this changes between plans, forces re-sync on the next apply even if the local source file appears unchanged on disk at plan time. " +
+				MarkdownDescription: "Optional external trigger value. When this changes between plans, or is unknown at plan time (e.g. its producer is being created or replaced), forces re-sync on the next apply even if the local source file appears unchanged on disk at plan time; `source_hash` and `size` are then computed at apply. " +
 					"Use when the source file is produced by another resource in the same plan (e.g., `local_sensitive_file`) whose new content isn't yet on disk when this resource's plan modifier runs. " +
 					"Typically set to the producing resource's content checksum (e.g., `local_sensitive_file.example.content_sha256`).",
 				Optional: true,
@@ -1038,6 +1039,28 @@ func hashFile(path string) (string, int64, error) {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), size, nil
 }
 
+// sourceTriggerPending reports whether source_trigger signals that the local
+// source may change during this apply: the trigger is unknown at plan time
+// (its producer is being created or replaced), or it's known and differs
+// from state.
+func sourceTriggerPending(ctx context.Context, plan tfsdk.Plan, state tfsdk.State) bool {
+	if plan.Raw.IsNull() {
+		return false
+	}
+	var planTrigger types.String
+	if diags := plan.GetAttribute(ctx, path.Root("source_trigger"), &planTrigger); diags.HasError() || planTrigger.IsNull() {
+		return false
+	}
+	if planTrigger.IsUnknown() {
+		return true
+	}
+	var stateTrigger types.String
+	if !state.Raw.IsNull() {
+		_ = state.GetAttribute(ctx, path.Root("source_trigger"), &stateTrigger)
+	}
+	return !planTrigger.Equal(stateTrigger)
+}
+
 // sourceHashPlanModifier computes the source file hash during planning.
 // This allows Terraform to detect local file changes and trigger updates.
 type sourceHashPlanModifier struct{}
@@ -1056,27 +1079,15 @@ func (m sourceHashPlanModifier) PlanModifyString(ctx context.Context, req planmo
 		return
 	}
 
-	// If source_trigger is set and differs from state, force an update by marking
-	// source_hash as Unknown. This handles the case where the source file is
-	// produced by another resource in the same plan (e.g., local_sensitive_file)
-	// whose new content isn't on disk yet at plan time — so hashing disk would
-	// return the stale hash and Terraform would skip the sync.
-	var planTrigger, stateTrigger types.String
-	if !req.Plan.Raw.IsNull() {
-		if diags := req.Plan.GetAttribute(ctx, path.Root("source_trigger"), &planTrigger); !diags.HasError() {
-			if !req.State.Raw.IsNull() {
-				_ = req.State.GetAttribute(ctx, path.Root("source_trigger"), &stateTrigger)
-			}
-			if !planTrigger.IsNull() && !planTrigger.IsUnknown() && !planTrigger.Equal(stateTrigger) {
-				tflog.Debug(ctx, "source_trigger changed, forcing source_hash recomputation at apply",
-					map[string]interface{}{
-						"state_trigger": stateTrigger.ValueString(),
-						"plan_trigger":  planTrigger.ValueString(),
-					})
-				resp.PlanValue = types.StringUnknown()
-				return
-			}
-		}
+	// A pending source_trigger means the file on disk may be stale: it's
+	// produced by another resource in the same plan (e.g. local_sensitive_file)
+	// whose new content isn't written yet. Hashing disk now would plan a known
+	// but stale value, which the apply-time re-plan then contradicts
+	// ("Provider produced inconsistent final plan"). Leave it unknown instead.
+	if sourceTriggerPending(ctx, req.Plan, req.State) {
+		tflog.Debug(ctx, "source_trigger pending, deferring source_hash to apply")
+		resp.PlanValue = types.StringUnknown()
+		return
 	}
 
 	// Get the source path from the plan.
@@ -1188,17 +1199,10 @@ func (m sourceSizePlanModifier) PlanModifyInt64(ctx context.Context, req planmod
 		return
 	}
 
-	// If source_trigger is set and differs from state, size is unknown until apply.
-	// See sourceHashPlanModifier for rationale.
-	var planTrigger, stateTrigger types.String
-	if diags := req.Plan.GetAttribute(ctx, path.Root("source_trigger"), &planTrigger); !diags.HasError() {
-		if !req.State.Raw.IsNull() {
-			_ = req.State.GetAttribute(ctx, path.Root("source_trigger"), &stateTrigger)
-		}
-		if !planTrigger.IsNull() && !planTrigger.IsUnknown() && !planTrigger.Equal(stateTrigger) {
-			resp.PlanValue = types.Int64Unknown()
-			return
-		}
+	// See sourceHashPlanModifier for why a pending trigger defers to apply.
+	if sourceTriggerPending(ctx, req.Plan, req.State) {
+		resp.PlanValue = types.Int64Unknown()
+		return
 	}
 
 	// Get the source path from the plan.

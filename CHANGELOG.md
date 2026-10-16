@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `filesync_file`: a `source_trigger` that is unknown at plan time (its producer, e.g. a `local_sensitive_file`, is being created or replaced) now defers `source_hash`/`size` to apply instead of planning the stale on-disk values, which made the apply fail with "Provider produced inconsistent final plan".
+
 ### Added
 
 - Initial release of `terraform-provider-filesync`.
